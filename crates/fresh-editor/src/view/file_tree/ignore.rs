@@ -198,26 +198,32 @@ impl IgnorePatterns {
 
     /// Check if path matches any custom patterns
     fn matches_custom_pattern(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-
         for pattern in &self.custom_patterns {
-            // Simple pattern matching (could be improved with glob crate)
-            if pattern.ends_with('/') {
-                // Directory pattern
-                if path_str.contains(pattern.trim_end_matches('/')) {
-                    return true;
+            let p = pattern.trim();
+            if p.is_empty() {
+                continue;
+            }
+
+            // Extension pattern like "*.o"
+            if let Some(ext) = p.strip_prefix('*') {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(ext) {
+                        return true;
+                    }
                 }
-            } else if pattern.starts_with('*') {
-                // Extension pattern like "*.o"
-                let ext = pattern.trim_start_matches('*');
-                if path_str.ends_with(ext) {
-                    return true;
-                }
-            } else {
-                // Exact match
-                if path_str.contains(pattern) {
-                    return true;
-                }
+                continue;
+            }
+
+            // Path component matching (e.g. ".git", ".git/", "node_modules", "target/")
+            // Strips leading/trailing separators and wildcards so component matches accurately.
+            let comp_target = p
+                .trim_end_matches('/')
+                .trim_end_matches('\\')
+                .trim_end_matches("/**")
+                .trim_start_matches("**/");
+
+            if !comp_target.is_empty() && path.components().any(|c| c.as_os_str() == comp_target) {
+                return true;
             }
         }
 
@@ -339,6 +345,16 @@ mod tests {
             patterns.get_status(Path::new("/foo/src/main.rs"), false),
             IgnoreStatus::Visible
         );
+
+        // Pattern ".git" must ignore .git directory and contents, but NOT .gitignore or .github
+        patterns.add_custom_pattern(".git".to_string());
+        patterns.set_show_hidden(true);
+        assert!(patterns.is_ignored(Path::new("/foo/.git"), true));
+        assert!(patterns.is_ignored(Path::new("/foo/.git/HEAD"), false));
+        assert!(!patterns.is_ignored(Path::new("/foo/.gitignore"), false));
+        assert!(!patterns.is_ignored(Path::new("/foo/.gitattributes"), false));
+        assert!(!patterns.is_ignored(Path::new("/foo/.github/workflows"), true));
+        assert!(!patterns.is_ignored(Path::new("/foo/open-lazygit.bat"), false));
     }
 
     #[test]

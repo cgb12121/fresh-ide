@@ -687,15 +687,13 @@ pub fn row_theme(is_cursor: bool, is_multi: bool, focused: bool) -> String {
     }
 }
 
-/// The foreground a node's name takes when nothing overrides it: hidden files
-/// recede, symlinks take the type colour, directories the keyword colour.
-pub fn neutral_key(is_hidden: bool, is_symlink: bool, is_dir: bool) -> &'static str {
-    if is_hidden {
-        "editor.line_number_fg"
-    } else if is_symlink {
+/// The foreground a node's name takes when nothing overrides it: symlinks take
+/// the type colour, directories the folder colour, files the editor foreground.
+pub fn neutral_key(_is_hidden: bool, is_symlink: bool, is_dir: bool) -> &'static str {
+    if is_symlink {
         "syntax.type"
     } else if is_dir {
-        "syntax.keyword"
+        "ui.folder_fg"
     } else {
         "editor.fg"
     }

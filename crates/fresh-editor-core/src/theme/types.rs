@@ -941,6 +941,9 @@ pub struct UiColors {
     /// File status: conflicted file color in file explorer (falls back to diagnostic.error_fg)
     #[serde(default)]
     pub file_status_conflicted_fg: Option<StyledColorDef>,
+    /// Folder name color in file explorer (falls back to editor.fg)
+    #[serde(default)]
+    pub folder_fg: Option<StyledColorDef>,
 }
 
 /// Search result highlighting colors
@@ -1246,6 +1249,8 @@ pub struct Theme {
     pub file_status_renamed_fg: Color,
     pub file_status_untracked_fg: Color,
     pub file_status_conflicted_fg: Color,
+    /// Folder name color in file explorer
+    pub folder_fg: Color,
 
     // Search colors
     pub search_match_bg: Color,
@@ -1474,6 +1479,7 @@ impl From<ThemeFile> for Theme {
             file_status_renamed_fg: styled_color(&file.ui.file_status_renamed_fg),
             file_status_untracked_fg: styled_color(&file.ui.file_status_untracked_fg),
             file_status_conflicted_fg: styled_color(&file.ui.file_status_conflicted_fg),
+            folder_fg: styled_color(&file.ui.folder_fg),
             search_match_bg: styled_color(&file.search.match_bg),
             search_match_fg: styled_color(&file.search.match_fg),
             search_current_match_bg: styled_color(&file.search.current_match_bg),
@@ -1663,6 +1669,7 @@ impl From<Theme> for ThemeFile {
                 file_status_renamed_fg: styled(&theme, "ui.file_status_renamed_fg"),
                 file_status_untracked_fg: styled(&theme, "ui.file_status_untracked_fg"),
                 file_status_conflicted_fg: styled(&theme, "ui.file_status_conflicted_fg"),
+                folder_fg: styled(&theme, "ui.folder_fg"),
             },
             search: SearchColors {
                 match_bg: styled(&theme, "search.match_bg"),
@@ -2333,6 +2340,7 @@ theme_color_keys! {
         "file_status_modified_fg" => color file_status_modified_fg fallback "diagnostic.warning_fg",
         "file_status_renamed_fg" => color file_status_renamed_fg fallback "diagnostic.info_fg",
         "file_status_untracked_fg" => color file_status_untracked_fg fallback "diagnostic.hint_fg",
+        "folder_fg" => color folder_fg fallback "editor.fg",
         "help_bg" => color help_bg,
         "help_fg" => color help_fg,
         "help_indicator_bg" => color help_indicator_bg,
@@ -3593,6 +3601,28 @@ mod tests {
         }));
         assert_eq!(theme.blame_header_bg, Color::Rgb(11, 22, 33));
         assert_eq!(theme.blame_header_fg, Color::Rgb(44, 55, 66));
+    }
+
+    #[test]
+    fn folder_fg_falls_back_to_editor_fg_or_uses_explicit() {
+        let default_theme = standalone(serde_json::json!({
+            "editor": { "fg": [238, 255, 255] }
+        }));
+        assert_eq!(default_theme.folder_fg, Color::Rgb(238, 255, 255));
+        assert_eq!(
+            default_theme.resolve_theme_key("ui.folder_fg"),
+            Some(Color::Rgb(238, 255, 255))
+        );
+
+        let custom_theme = standalone(serde_json::json!({
+            "editor": { "fg": [238, 255, 255] },
+            "ui": { "folder_fg": [100, 200, 255] }
+        }));
+        assert_eq!(custom_theme.folder_fg, Color::Rgb(100, 200, 255));
+        assert_eq!(
+            custom_theme.resolve_theme_key("ui.folder_fg"),
+            Some(Color::Rgb(100, 200, 255))
+        );
     }
 
     #[test]

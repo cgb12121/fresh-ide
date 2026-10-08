@@ -231,12 +231,10 @@ impl Editor {
         let is_hidden = node_metadata.map(|m| m.is_hidden).unwrap_or(false);
         let is_symlink = path.is_symlink();
         let theme = self.theme.read().unwrap();
-        let neutral_fg = if is_hidden {
-            theme.line_number_fg
-        } else if is_symlink {
+        let neutral_fg = if is_symlink {
             theme.syntax_type
         } else if is_directory {
-            theme.syntax_keyword
+            theme.folder_fg
         } else {
             theme.editor_fg
         };

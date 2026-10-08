@@ -188,7 +188,7 @@ pub fn describe_row(d: RowDesc<'_>) -> crate::view::shell::file_explorer::Row {
             };
             fe::ChainPart {
                 runs: vec![
-                    (seg.name.clone(), pair("syntax.keyword", ground)),
+                    (seg.name.clone(), pair("ui.folder_fg", ground)),
                     ("/".to_string(), pair("editor.line_number_fg", ground)),
                 ],
                 path: seg.path.clone(),
