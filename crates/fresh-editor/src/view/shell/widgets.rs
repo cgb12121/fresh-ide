@@ -2384,7 +2384,9 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
                 *disabled,
                 cx.marker_gutter,
                 *full_width,
-                key.is_some_and(|key| key.starts_with("act_view:")),
+                key.is_some_and(|key| {
+                    key.starts_with("act_view:") || key == "act_settings"
+                }),
                 hover,
                 style.as_ref(),
                 &cx.surface,

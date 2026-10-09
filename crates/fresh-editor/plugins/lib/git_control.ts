@@ -6,7 +6,8 @@
  * Provides high-level git staging, commit, graph queries and working tree mutations.
  */
 
-import { resolveGitRepo, git, type GitRepo } from "./git_repo.ts";
+import { resolveGitRepo, git, diffArgs, type GitRepo } from "./git_repo.ts";
+import { fetchCommitShow } from "./git_history.ts";
 
 export type GitChangeType = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
 
@@ -62,47 +63,59 @@ export async function getGitStatus(editor: EditorAPI): Promise<GitStatusSummary 
     return null;
   }
 
-  // Get current branch
+  // Porcelain v2 includes branch/upstream and file state in one git process.
   let branch = "HEAD";
   let upstream = "";
   let ahead = 0;
   let behind = 0;
-  try {
-    const branchRes = await git(editor, repo, ["status", "--porcelain=2", "--branch"]);
-    if (branchRes.exit_code === 0) {
-      for (const line of branchRes.stdout.split("\n")) {
-        if (line.startsWith("# branch.head ")) branch = line.slice(14).trim() || "HEAD";
-        else if (line.startsWith("# branch.upstream ")) upstream = line.slice(18).trim();
-        else if (line.startsWith("# branch.ab ")) {
-          const m = line.match(/\+(\d+)\s+-(\d+)/);
-          if (m) { ahead = Number(m[1]); behind = Number(m[2]); }
-        }
-      }
-    }
-  } catch {
-    // Keep fallback
-  }
-
-  // Get status output
   const staged: GitFileChange[] = [];
   const unstaged: GitFileChange[] = [];
 
   try {
-    const statusRes = await git(editor, repo, ["status", "--porcelain=v1", "-u"]);
+    const statusRes = await git(editor, repo, ["status", "--porcelain=v2", "--branch", "-u"]);
     if (statusRes.exit_code === 0) {
       const lines = statusRes.stdout.split("\n");
       for (const line of lines) {
-        if (line.length < 3) continue;
-        const x = line[0];
-        const y = line[1];
-        let filePath = line.slice(3).trim();
-
-        if (filePath.includes(" -> ")) {
-          filePath = filePath.split(" -> ").pop() ?? filePath;
+        if (line.startsWith("# branch.head ")) {
+          branch = line.slice(14).trim() || "HEAD";
+          continue;
         }
+        if (line.startsWith("# branch.upstream ")) {
+          upstream = line.slice(18).trim();
+          continue;
+        }
+        if (line.startsWith("# branch.ab ")) {
+          const match = line.match(/\+(\d+)\s+-(\d+)/);
+          if (match) {
+            ahead = Number(match[1]);
+            behind = Number(match[2]);
+          }
+          continue;
+        }
+        const fields = line.split(" ");
+        const record = fields[0];
+        if (record === "?" && line.startsWith("? ")) {
+          unstaged.push({ path: line.slice(2), staged: false, status: "untracked", rawCode: "?" });
+          continue;
+        }
+        if (record !== "1" && record !== "2" && record !== "u") continue;
+        const xy = fields[1] ?? "..";
+        const pathStart = record === "1" ? 8 : record === "2" ? 9 : 10;
+        let filePath = fields.slice(pathStart).join(" ");
+        // For a type-2 rename, the current path precedes the tab and the
+        // original path follows it.
+        if (record === "2") filePath = filePath.split("\t", 1)[0];
+        if (!filePath) continue;
+        const x = xy[0] ?? ".";
+        const y = xy[1] ?? ".";
 
-        // Staged changes (X column is not space and not untracked)
-        if (x !== " " && x !== "?") {
+        if (record === "u") {
+          staged.push({ path: filePath, staged: true, status: "conflicted", rawCode: "U" });
+          unstaged.push({ path: filePath, staged: false, status: "conflicted", rawCode: "U" });
+          continue;
+        }
+        // Staged changes are in X; worktree changes are in Y.
+        if (x !== ".") {
           staged.push({
             path: filePath,
             staged: true,
@@ -111,8 +124,7 @@ export async function getGitStatus(editor: EditorAPI): Promise<GitStatusSummary 
           });
         }
 
-        // Unstaged changes (Y column is not space)
-        if (y !== " ") {
+        if (y !== ".") {
           unstaged.push({
             path: filePath,
             staged: false,
@@ -142,8 +154,87 @@ export async function gitShowCommit(editor: EditorAPI, hash: string): Promise<st
   if (!/^[0-9a-f]{7,40}$/i.test(hash)) return "";
   const repo = await resolveGitRepo(editor);
   if (!repo) return "";
-  const result = await git(editor, repo, ["show", "--format=fuller", "--stat", "--patch", hash]);
-  return result.exit_code === 0 ? result.stdout : result.stderr;
+  return await fetchCommitShow(editor, hash, repo.root);
+}
+
+/** Get bounded Git hunk metadata before loading file bodies or aligning panes. */
+export async function getGitFileDiffInfo(
+  editor: EditorAPI,
+  repoRoot: string,
+  path: string,
+  staged: boolean,
+): Promise<{ changedLines: number; binary: boolean; hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> }> {
+  const repo = { root: repoRoot };
+  const stageArgs = staged ? ["--cached"] : [];
+  const statResult = await git(editor, repo, diffArgs(["diff"], ...stageArgs, "--numstat", "--", path));
+  if (statResult.exit_code !== 0) {
+    return { changedLines: 0, binary: false, hunks: [] };
+  }
+
+  let changedLines = 0;
+  let binary = false;
+  const hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> = [];
+  for (const line of statResult.stdout.split("\n")) {
+    const firstTab = line.indexOf("\t");
+    if (firstTab < 0) continue;
+    const secondTab = line.indexOf("\t", firstTab + 1);
+    if (secondTab < 0) continue;
+    const added = line.slice(0, firstTab);
+    const removed = line.slice(firstTab + 1, secondTab);
+    if (added === "-" || removed === "-") {
+      binary = true;
+    } else {
+      changedLines += (Number(added) || 0) + (Number(removed) || 0);
+    }
+  }
+  // Do not ask Git to materialize the patch for a file we will skip below.
+  if (binary || changedLines > 2000) return { changedLines, binary, hunks: [] };
+
+  const patchResult = await git(editor, repo, diffArgs(["diff"], ...stageArgs, "--unified=0", "--", path));
+  if (patchResult.exit_code !== 0) return { changedLines, binary, hunks: [] };
+  for (const line of patchResult.stdout.split("\n")) {
+    if (line.startsWith("@@")) {
+      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (!match) continue;
+      const oldLine = Number(match[1]);
+      const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+      const newLine = Number(match[3]);
+      const newCount = match[4] === undefined ? 1 : Number(match[4]);
+      hunks.push({
+        oldStart: oldCount === 0 ? oldLine : oldLine - 1,
+        oldCount,
+        newStart: newCount === 0 ? newLine : newLine - 1,
+        newCount,
+      });
+    }
+  }
+  return { changedLines, binary, hunks };
+}
+
+/** Read the two snapshots compared by a staged or unstaged file review. */
+export async function getGitFileSnapshots(
+  editor: EditorAPI,
+  repoRoot: string,
+  path: string,
+  staged: boolean,
+): Promise<{ oldText: string; newText: string } | null> {
+  const repo = { root: repoRoot };
+
+  const readObject = async (spec: string): Promise<string> => {
+    const result = await git(editor, repo, ["show", spec]);
+    return result.exit_code === 0 ? result.stdout : "";
+  };
+
+  if (staged) {
+    return {
+      oldText: await readObject(`HEAD:${path}`),
+      newText: await readObject(`:${path}`),
+    };
+  }
+
+  const oldText = await readObject(`:${path}`);
+  const absolutePath = editor.pathJoin(repo.root, path);
+  return { oldText, newText: editor.readFile(absolutePath) ?? "" };
 }
 
 /** Explicitly update remote tracking refs; this is never run as a side effect of refresh. */

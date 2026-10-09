@@ -73,8 +73,8 @@ function toggleAgentDock(): void {
 }
 
 function renderViewButton(v: ViewDefinition, isActive: boolean): WidgetSpec {
-  // Native activity buttons render as padded 5x3 tiles; center each
-  // single-cell Nerd Font glyph in that square target.
+  // The sidebar reserves five columns; the native button renderer supplies
+  // the three-row vertical tile around this centered, one-cell glyph.
   const labelText = `  ${v.icon}  `;
 
   return button(labelText, {
@@ -84,7 +84,7 @@ function renderViewButton(v: ViewDefinition, isActive: boolean): WidgetSpec {
     intent: isActive ? "primary" : "normal",
     style: isActive
       ? { bold: true, fg: "syntax.keyword" }
-      : { fg: "editor.fg" },
+      : { bold: true, fg: "editor.fg" },
     hoverStyle: { fg: "syntax.function", bold: true },
   });
 }
@@ -120,6 +120,17 @@ function buildActivityBarSpec(): WidgetSpec {
     }
     widgets.push(spacer(1));
   }
+
+  widgets.push(
+    button(`  \u{f013}  `, {
+      key: "act_settings",
+      bare: true,
+      fullWidth: true,
+      style: { bold: true, fg: "editor.fg" },
+      hoverStyle: { fg: "syntax.function", bold: true },
+    })
+  );
+  widgets.push(spacer(1));
 
   return col(...widgets);
 }
@@ -159,6 +170,10 @@ editor.on("widget_event", (event: WidgetEvt) => {
   }
 
   const key = event.widget_key ?? "";
+  if (key === "act_settings") {
+    editor.executeAction("open_settings");
+    return;
+  }
   if (key.startsWith("act_view:")) {
     const viewId = key.slice("act_view:".length);
     if (viewId === "agents") {
