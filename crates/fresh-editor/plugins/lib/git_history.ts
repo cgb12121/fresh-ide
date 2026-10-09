@@ -175,6 +175,7 @@ export async function fetchCommitShow(
     workdir
   );
   const oversized: string[] = [];
+  const numstatRows: Array<{ path: string; added: number | null; removed: number | null }> = [];
   if (numstatResult.exit_code === 0) {
     for (const line of numstatResult.stdout.split("\n")) {
       if (!line) continue;
@@ -187,15 +188,20 @@ export async function fetchCommitShow(
       const path = line.slice(tab2 + 1);
       const added = addedStr === "-" ? 0 : parseInt(addedStr, 10) || 0;
       const removed = removedStr === "-" ? 0 : parseInt(removedStr, 10) || 0;
+      numstatRows.push({
+        path,
+        added: addedStr === "-" ? null : added,
+        removed: removedStr === "-" ? null : removed,
+      });
       if (added + removed > MAX_DIFF_LINES_PER_FILE) {
         oversized.push(path);
       }
     }
   }
 
-  // Stat + patch, excluding oversized paths. `:(exclude,top)` is rooted
-  // at the repo root so it matches regardless of git's cwd.
-  const showArgs = diffArgs(["show"], "--stat", "--patch", hash);
+  // Patch only; render per-file change counts from numstat below so users see
+  // exact additions/deletions instead of Git's ambiguous +++--- ratio bars.
+  const showArgs = diffArgs(["show"], "--patch", hash);
   if (oversized.length > 0) {
     showArgs.push("--", ".");
     for (const p of oversized) showArgs.push(`:(exclude,top)${p}`);
@@ -203,13 +209,35 @@ export async function fetchCommitShow(
   const result = await editor.spawnProcess("git", showArgs, workdir);
   if (result.exit_code !== 0) return result.stderr || "(no output)";
 
-  if (oversized.length === 0) return result.stdout;
+  let output = result.stdout;
+  const patchHeader = /^diff --git /m.exec(output);
+  const patchStart = patchHeader?.index ?? -1;
+  const visibleStats = numstatRows.filter((row) => !oversized.includes(row.path));
+  if (patchStart >= 0 && visibleStats.length > 0) {
+    const addedTotal = visibleStats.reduce((sum, row) => sum + (row.added ?? 0), 0);
+    const removedTotal = visibleStats.reduce((sum, row) => sum + (row.removed ?? 0), 0);
+    const statLines = visibleStats.map((row) => {
+      const change = row.added === null || row.removed === null
+        ? "binary"
+        : `+${row.added} -${row.removed}`;
+      return ` ${row.path} | ${change}`;
+    });
+    const fileWord = visibleStats.length === 1 ? "file" : "files";
+    const insertionWord = addedTotal === 1 ? "insertion" : "insertions";
+    const deletionWord = removedTotal === 1 ? "deletion" : "deletions";
+    statLines.push(
+      `${visibleStats.length} ${fileWord} changed, ${addedTotal} ${insertionWord}(+), ${removedTotal} ${deletionWord}(-)`,
+    );
+    output = `${output.slice(0, patchStart)}${statLines.join("\n")}\n\n${output.slice(patchStart)}`;
+  }
+
+  if (oversized.length === 0) return output;
 
   const plural = oversized.length === 1 ? "" : "s";
   let footer = `\n[${oversized.length} large file${plural} omitted from diff (>${MAX_DIFF_LINES_PER_FILE} lines changed):\n`;
   for (const p of oversized) footer += `  ${p}\n`;
   footer += `Run \`git show ${hash.slice(0, 12)} -- <path>\` to view.]\n`;
-  return result.stdout + footer;
+  return output + footer;
 }
 
 // =============================================================================

@@ -61,6 +61,9 @@ let commitPreviewContent = "";
 let commitPreviewTopLine = 1;
 let fileDiffPreview: { compositeId: number; oldBufferId: number; newBufferId: number } | null = null;
 let fileDiffRequest = 0;
+const deferredDiffSourceCleanup: Array<{ oldBufferId: number; newBufferId: number }> = [];
+const GIT_ADDED_COLOR: [number, number, number] = [86, 211, 100];
+const GIT_DELETED_COLOR: [number, number, number] = [248, 81, 73];
 
 // Refresh git status and graph
 export async function refreshGitData(): Promise<void> {
@@ -92,10 +95,10 @@ async function refreshGitStatusData(): Promise<void> {
 
 function gitLineStyle(line: string): TextPropertyEntry["style"] {
   if (line.startsWith("+") && !line.startsWith("+++")) {
-    return { fg: "ui.file_status_added_fg", bold: true };
+    return { fg: GIT_ADDED_COLOR, bold: true };
   }
   if (line.startsWith("-") && !line.startsWith("---")) {
-    return { fg: "ui.file_status_deleted_fg", bold: true };
+    return { fg: GIT_DELETED_COLOR, bold: true };
   }
   if (line.startsWith("@@")) return { fg: "syntax.keyword", bold: true };
   if (line.startsWith("diff --git ")) return { fg: "syntax.type", bold: true };
@@ -105,42 +108,63 @@ function gitLineStyle(line: string): TextPropertyEntry["style"] {
   return { fg: "editor.fg" };
 }
 
-function gitStatSegments(line: string): StyledSegment[] | undefined {
-  const bar = line.match(/^(.*\|\s*\d+\s+)(\+*)(-*)(\s*)$/);
-  if (bar && (bar[2] || bar[3])) {
-    return [
-      { text: bar[1] },
-      ...(bar[2] ? [{ text: bar[2], style: { fg: "ui.file_status_added_fg", bold: true } }] : []),
-      ...(bar[3] ? [{ text: bar[3], style: { fg: "ui.file_status_deleted_fg", bold: true } }] : []),
-      ...(bar[4] ? [{ text: bar[4] }] : []),
-    ];
+function gitStatOverlays(line: string): Array<{
+  start: number;
+  end: number;
+  style: { fg: [number, number, number]; bold: boolean };
+  unit: "char";
+}> {
+  const overlays: Array<{
+    start: number;
+    end: number;
+    style: { fg: [number, number, number]; bold: boolean };
+    unit: "char";
+  }> = [];
+  const pipe = line.lastIndexOf("|");
+  if (pipe >= 0) {
+    const stat = line.slice(pipe + 1).match(/^(\s*)(\+\d+)\s+(-\d+|binary)\s*$/);
+    if (stat) {
+      const addedStart = pipe + 1 + stat[1].length;
+      const removedStart = addedStart + stat[2].length + 1;
+      overlays.push({
+        start: Array.from(line.slice(0, addedStart)).length,
+        end: Array.from(line.slice(0, addedStart + stat[2].length)).length,
+        style: { fg: GIT_ADDED_COLOR, bold: true },
+        unit: "char",
+      });
+      if (stat[3].startsWith("-")) {
+        overlays.push({
+          start: Array.from(line.slice(0, removedStart)).length,
+          end: Array.from(line.slice(0, removedStart + stat[3].length)).length,
+          style: { fg: GIT_DELETED_COLOR, bold: true },
+          unit: "char",
+        });
+      }
+      return overlays;
+    }
   }
 
   const countPattern = /\d+ insertions?\(\+\)|\d+ deletions?\(-\)/g;
-  const segments: StyledSegment[] = [];
-  let cursor = 0;
   for (const match of line.matchAll(countPattern)) {
     const index = match.index ?? 0;
-    if (index > cursor) segments.push({ text: line.slice(cursor, index) });
     const added = match[0].includes("insert");
-    segments.push({
-      text: match[0],
-      style: { fg: added ? "ui.file_status_added_fg" : "ui.file_status_deleted_fg", bold: true },
+    overlays.push({
+      start: Array.from(line.slice(0, index)).length,
+      end: Array.from(line.slice(0, index + match[0].length)).length,
+      style: { fg: added ? GIT_ADDED_COLOR : GIT_DELETED_COLOR, bold: true },
+      unit: "char",
     });
-    cursor = index + match[0].length;
   }
-  if (cursor === 0) return undefined;
-  if (cursor < line.length) segments.push({ text: line.slice(cursor) });
-  return segments;
+  return overlays;
 }
 
 function gitPreviewEntries(content: string): TextPropertyEntry[] {
   return content.split("\n").map((line) => {
-    const statSegments = gitStatSegments(line);
+    const statOverlays = gitStatOverlays(line);
     return {
       text: `${line}\n`,
       style: gitLineStyle(line),
-      ...(statSegments ? { segments: [...statSegments, { text: "\n" }] } : {}),
+      ...(statOverlays.length > 0 ? { inlineOverlays: statOverlays } : {}),
     };
   });
 }
@@ -157,6 +181,7 @@ async function showCommitPreview(hash: string): Promise<void> {
     if (editor.setVirtualBufferContent(commitPreviewBufferId, entries)) {
       editor.setSplitBuffer(commitPreviewSplitId, commitPreviewBufferId);
       editor.focusSplit(commitPreviewSplitId);
+      editor.setLineWrap(commitPreviewBufferId, commitPreviewSplitId, true);
       editor.scrollBufferToLine(commitPreviewBufferId, commitPreviewTopLine);
       commitPreviewContent = details;
       return;
@@ -172,6 +197,7 @@ async function showCommitPreview(hash: string): Promise<void> {
   commitPreviewSplitId = editor.getActiveSplitId();
   commitPreviewContent = details;
   commitPreviewTopLine = 1;
+  editor.setLineWrap(commitPreviewBufferId, commitPreviewSplitId, true);
 }
 
 editor.on("viewport_changed", (event: { buffer_id: number; top_byte: number }) => {
@@ -274,6 +300,19 @@ async function previewChangedFile(path: string, staged: boolean): Promise<void> 
     return;
   }
 
+  // Creating a composite only registers the buffer; it does not display it.
+  // Attach it to the editor split just like the commit preview path does.
+  const splitId = editor.getActiveSplitId();
+  if (!editor.setSplitBuffer(splitId, compositeId)) {
+    editor.closeCompositeBuffer(compositeId);
+    editor.closeBuffer(oldRes.bufferId, true);
+    editor.closeBuffer(newRes.bufferId, true);
+    statusFeedback = `Could not open diff for ${path}`;
+    updatePanel();
+    return;
+  }
+  editor.focusSplit(splitId);
+
   const previous = fileDiffPreview;
   fileDiffPreview = { compositeId, oldBufferId: oldRes.bufferId, newBufferId: newRes.bufferId };
   if (previous) {
@@ -292,17 +331,26 @@ editor.on("buffer_closed", (event: { buffer_id: number }) => {
     const closedPreview = fileDiffPreview;
     fileDiffPreview = null;
     // Do not make editor RPC calls while the host is still dispatching the
-    // close hook; defer source cleanup to avoid re-entrant close deadlocks.
-    setTimeout(() => {
-      editor.closeBuffer(closedPreview.oldBufferId, true);
-      editor.closeBuffer(closedPreview.newBufferId, true);
-    }, 0);
+    // close hook. Fresh timers are editor-owned; QuickJS has no global
+    // setTimeout/setInterval APIs.
+    deferredDiffSourceCleanup.push({
+      oldBufferId: closedPreview.oldBufferId,
+      newBufferId: closedPreview.newBufferId,
+    });
+    editor.setTimeout(0, "git_cleanup_closed_diff_sources");
   }
   if (commitPreviewBufferId === closedId) {
     commitPreviewBufferId = null;
     commitPreviewSplitId = null;
     commitPreviewContent = "";
     commitPreviewTopLine = 1;
+  }
+});
+
+registerHandler("git_cleanup_closed_diff_sources", () => {
+  for (const pending of deferredDiffSourceCleanup.splice(0)) {
+    editor.closeBuffer(pending.oldBufferId, true);
+    editor.closeBuffer(pending.newBufferId, true);
   }
 });
 
