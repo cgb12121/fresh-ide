@@ -586,7 +586,9 @@ pub fn content_body(
     pane_chrome: &std::collections::HashMap<LeafId, PaneChrome>,
     prepared: &mut PreparedGrid,
 ) {
+    let t_render = std::time::Instant::now();
     let (_, described_panes) = frame_pane_sets(editor, window);
+    let t_sets = std::time::Instant::now();
     let pass = &prepared.pass;
     let contents = with_grid(
         editor,
@@ -597,8 +599,24 @@ pub fn content_body(
         &described_panes,
         |facts, stores, _| content_pass(pass, facts, stores),
     );
+    let t_pass = std::time::Instant::now();
     prepared.contents = contents.unwrap_or_default();
     settle_views(editor, window, prepared);
+    let t_settle = std::time::Instant::now();
+
+    // Where a slow content pass went. Only slow ones are reported, so an idle
+    // editor logs nothing. A pass that formats every visible line should not
+    // cost tens of milliseconds; without this split there is no way to tell
+    // the formatting from the write-back.
+    if t_settle.duration_since(t_sets) >= std::time::Duration::from_millis(8) {
+        tracing::info!(
+            target: "paste_timing",
+            "content_parts: pane_sets={}ms pass={}ms settle={}ms",
+            t_sets.duration_since(t_render).as_millis(),
+            t_pass.duration_since(t_sets).as_millis(),
+            t_settle.duration_since(t_pass).as_millis(),
+        );
+    }
 }
 
 /// Settle what a text pass drew for `pane` on the pane's leaf: the rows, at

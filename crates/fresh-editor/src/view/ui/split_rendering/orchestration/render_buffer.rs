@@ -211,6 +211,7 @@ pub(crate) fn compute_buffer_layout(
     cell_theme_map: Option<(&mut Vec<CellThemeInfo>, u16)>,
 ) -> BufferLayoutOutput {
     let _span = tracing::trace_span!("compute_buffer_layout").entered();
+    let t_total = std::time::Instant::now();
     crate::view::ui::split_rendering::instrument::count_buffer_layout();
 
     // Compute effective editor background: terminal default or theme-defined
@@ -318,6 +319,7 @@ pub(crate) fn compute_buffer_layout(
         }
     };
 
+    let t_view_data = std::time::Instant::now();
     let view_data = {
         let _span = tracing::trace_span!("build_view_data").entered();
         build_view_data(
@@ -335,6 +337,7 @@ pub(crate) fn compute_buffer_layout(
             build_anchor,
         )
     };
+    let view_data_elapsed = t_view_data.elapsed();
 
     // Horizontal placement from the rows that were built. Vertical placement
     // was settled in row space by the reconcile, so this never moves
@@ -440,6 +443,7 @@ pub(crate) fn compute_buffer_layout(
         }
     };
 
+    let t_deco = std::time::Instant::now();
     let decorations = decoration_context(
         state,
         viewport_start,
@@ -455,6 +459,8 @@ pub(crate) fn compute_buffer_layout(
         &view_data.lines,
         fold_indicators_visible,
     );
+
+    let deco_elapsed = t_deco.elapsed();
 
     let calculated_offset = view_data.first_drawn;
 
@@ -481,6 +487,7 @@ pub(crate) fn compute_buffer_layout(
         None => (&mut dummy_map, 0u16),
     };
 
+    let t_render_lines = std::time::Instant::now();
     let render_output = render_view_lines(LineRenderInput {
         state,
         margin: &margin,
@@ -512,7 +519,30 @@ pub(crate) fn compute_buffer_layout(
         screen_width: sw,
     });
 
+    let render_lines_elapsed = t_render_lines.elapsed();
+
+    let t_clone = std::time::Instant::now();
     let view_line_mappings = render_output.view_line_mappings.clone();
+    let clone_elapsed = t_clone.elapsed();
+
+    // A pane's layout is the frame's largest single cost, and until it was
+    // split here "slow" only said that. Reported whole (not per part) so a slow
+    // layout is attributable without a log line per frame.
+    let total_elapsed = t_total.elapsed();
+    if total_elapsed >= std::time::Duration::from_millis(8) {
+        tracing::info!(
+            target: "paste_timing",
+            "layout_parts: total={}ms view_data={}ms deco={}ms render_lines={}ms clone={}ms rest={}ms",
+            total_elapsed.as_millis(),
+            view_data_elapsed.as_millis(),
+            deco_elapsed.as_millis(),
+            render_lines_elapsed.as_millis(),
+            clone_elapsed.as_millis(),
+            total_elapsed
+                .saturating_sub(view_data_elapsed + deco_elapsed + render_lines_elapsed + clone_elapsed)
+                .as_millis(),
+        );
+    }
 
     let buffer_ends_with_newline = if !state.buffer.is_empty() {
         let last_char = state.get_text_range(state.buffer.len() - 1, state.buffer.len());

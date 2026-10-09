@@ -525,6 +525,7 @@ fn text_pane_content(
         ..
     } = style.cfg;
     let _span = tracing::trace_span!("text_pane_content").entered();
+    let t_layout = std::time::Instant::now();
     let layout = compute_buffer_layout(
         state,
         &bvs.cursors,
@@ -553,6 +554,17 @@ fn text_pane_content(
         bracket_highlight,
         Some((cell_theme_map, screen_width)),
     );
+    // A pane formats its visible lines from scratch every frame. At ~64 lines
+    // this is the one number that decides whether the editor can hold a frame
+    // budget, so it gets reported on its own when it is slow.
+    let layout_elapsed = t_layout.elapsed();
+    if layout_elapsed >= std::time::Duration::from_millis(8) {
+        tracing::info!(
+            target: "paste_timing",
+            "buffer_layout: {}ms",
+            layout_elapsed.as_millis(),
+        );
+    }
     let has_caret = is_active && state.show_cursors;
     let shows_caret = has_caret && !hide_cursor;
     let caret = has_caret
