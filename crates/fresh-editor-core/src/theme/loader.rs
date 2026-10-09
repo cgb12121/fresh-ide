@@ -142,6 +142,18 @@ impl ThemeRegistry {
             return Some(value.to_string());
         }
 
+        // Older Windows configs commonly persisted `gruvbox-dark`, while
+        // the embedded theme has always been named `gruvbox`. Keep that
+        // historical spelling resolvable so startup does not silently fall
+        // back to the default theme.
+        if value.eq_ignore_ascii_case("gruvbox-dark") {
+            return self
+                .theme_list
+                .iter()
+                .find(|info| info.pack.is_empty() && info.name.eq_ignore_ascii_case("gruvbox"))
+                .map(|info| info.key.clone());
+        }
+
         // 2. `builtin://NAME` — look up a built-in by normalized name.
         if let Some(name) = value.strip_prefix("builtin://") {
             let normalized = normalize_theme_name(name);
@@ -1056,6 +1068,12 @@ mod tests {
             registry.resolve_key("high-contrast").as_deref(),
             Some("high-contrast"),
             "legacy bare-name config must keep working"
+        );
+
+        assert_eq!(
+            registry.resolve_key("gruvbox-dark").as_deref(),
+            Some("gruvbox"),
+            "legacy gruvbox-dark config must resolve to the embedded gruvbox theme"
         );
 
         // 6. Unknown reference yields None (no fuzzy masking of typos).
