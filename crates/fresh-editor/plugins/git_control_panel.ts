@@ -66,8 +66,10 @@ let fileDiffPreview: { compositeId: number; oldBufferId: number; newBufferId: nu
 let fileDiffRequest = 0;
 const deferredDiffSourceCleanup: Array<{ oldBufferId: number; newBufferId: number }> = [];
 /** Unchanged lines kept on each side of a hunk in the file review, the same
- *  default VS Code ships as `diffEditor.hideUnchangedRegions.contextLineCount`. */
-const DIFF_CONTEXT_LINES = 3;
+ *  shape VS Code ships as `diffEditor.hideUnchangedRegions.contextLineCount`
+ *  (it defaults to 3; 5 reads better here and still bounds a 500-line file to
+ *  a couple of dozen lines per side). */
+const DIFF_CONTEXT_LINES = 5;
 /** The two source buffers of the file review, kept across clicks. The composite
  *  is cheap to rebuild; two virtual buffers per click are not. */
 let diffSourceBuffers: { oldId: number; newId: number } | null = null;
