@@ -437,7 +437,7 @@ export function buildGitPanelSpec(): WidgetSpec {
     : "no-repo";
   children.push(
     row(
-      label(`\u{f1d3} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
+      label(`\u{f126} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
       flexSpacer(),
       button("⟳", {
         key: "git_refresh",
@@ -792,9 +792,9 @@ const registry = getViewRegistry();
 registry.registerView({
   id: "git",
   title: "Source Control & Git Graph",
-  icon: "\u{f1d3}", // Nerd Font md-source_branch. The old \u{e702} is a Powerline
-                  // codepoint, which renders as a branch in some terminals and as
-                  // a box-drawing glyph in others.
+  icon: "\u{f126}", // Font Awesome 4 "code-fork" — the branch icon, and the oldest
+                  // Nerd Font range (f000-f2ff), so it renders on far more fonts
+                  // than f1d3 / f544, which showed as tofu or "?" on this box.
   hotkey: "Ctrl+Shift+G",
   order: 20,
   onActivate: () => {

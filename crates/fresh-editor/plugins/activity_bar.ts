@@ -54,7 +54,8 @@ registry.registerView({
 registry.registerView({
   id: "agents",
   title: "Agent Sessions",
-  icon: "\u{f544}", // Nerd Font robot
+  icon: "\u{f135}", // Font Awesome 4 "rocket" — same oldest-range reason as the
+                   // git icon; f544 (robot) rendered as "?" on this terminal.
   hotkey: "Ctrl+Shift+A",
   order: 40,
 });
