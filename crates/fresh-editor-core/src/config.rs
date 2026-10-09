@@ -1124,6 +1124,17 @@ pub struct EditorConfig {
     #[schemars(extend("x-section" = "Display"))]
     pub cursor_jump_animation: bool,
 
+    /// Slide the pane sideways when the active tab changes.
+    ///
+    /// Split out of `animations` because the two want opposite answers
+    /// often enough: a pane slide is decoration, while smooth scroll is
+    /// legibility on a slow link, and a user who wants the second should not
+    /// have to take the first. Needs `animations` on; `animations: false`
+    /// still turns everything off.
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Display"))]
+    pub tab_switch_animation: bool,
+
     /// Fade out the top and bottom two rows of each pane when there is more
     /// text beyond that edge. The edge the cursor is on is never faded.
     #[serde(default = "default_true")]
@@ -1765,6 +1776,7 @@ impl Default for EditorConfig {
             auto_surround: true,
             virtual_space: VirtualSpaceMode::default(),
             animations: true,
+            tab_switch_animation: true,
             cursor_jump_animation: true,
             viewport_edge_fade: true,
             line_numbers: true,

@@ -159,6 +159,7 @@ pub struct PartialEditorConfig {
     pub auto_surround: Option<bool>,
     pub virtual_space: Option<crate::config::VirtualSpaceMode>,
     pub animations: Option<bool>,
+    pub tab_switch_animation: Option<bool>,
     pub cursor_jump_animation: Option<bool>,
     pub viewport_edge_fade: Option<bool>,
     pub line_numbers: Option<bool>,
@@ -254,6 +255,8 @@ impl Merge for PartialEditorConfig {
         self.auto_surround.merge_from(&other.auto_surround);
         self.virtual_space.merge_from(&other.virtual_space);
         self.animations.merge_from(&other.animations);
+        self.tab_switch_animation
+            .merge_from(&other.tab_switch_animation);
         self.cursor_jump_animation
             .merge_from(&other.cursor_jump_animation);
         self.viewport_edge_fade
@@ -670,6 +673,7 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             auto_surround: Some(cfg.auto_surround),
             virtual_space: Some(cfg.virtual_space),
             animations: Some(cfg.animations),
+            tab_switch_animation: Some(cfg.tab_switch_animation),
             cursor_jump_animation: Some(cfg.cursor_jump_animation),
             viewport_edge_fade: Some(cfg.viewport_edge_fade),
             line_numbers: Some(cfg.line_numbers),
@@ -775,6 +779,9 @@ impl PartialEditorConfig {
             auto_surround: self.auto_surround.unwrap_or(defaults.auto_surround),
             virtual_space: self.virtual_space.unwrap_or(defaults.virtual_space),
             animations: self.animations.unwrap_or(defaults.animations),
+            tab_switch_animation: self
+                .tab_switch_animation
+                .unwrap_or(defaults.tab_switch_animation),
             cursor_jump_animation: self
                 .cursor_jump_animation
                 .unwrap_or(defaults.cursor_jump_animation),

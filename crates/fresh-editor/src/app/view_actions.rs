@@ -95,7 +95,7 @@ impl Window {
         if direction == 0 {
             return;
         }
-        if !self.config().editor.animations {
+        if !self.config().editor.animations || !self.config().editor.tab_switch_animation {
             return;
         }
         if area.width == 0 || area.height == 0 {

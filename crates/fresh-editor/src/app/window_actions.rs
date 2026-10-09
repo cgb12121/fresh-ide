@@ -831,7 +831,8 @@ impl crate::app::Editor {
     pub fn set_active_window_animated(&mut self, id: WindowId, from_edge: &str) {
         let animate = self.active_window != id
             && self.windows.contains_key(&id)
-            && self.config().editor.animations;
+            && self.config().editor.animations
+            && self.config().editor.tab_switch_animation;
         // Wipe the ENTIRE window — menu bar, explorer, tabs, splits, and
         // status bar — i.e. everything to the right of the dock. That's
         // the chrome area from the dock split, not just the buffer's
