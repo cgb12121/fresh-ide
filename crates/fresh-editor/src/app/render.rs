@@ -865,6 +865,7 @@ impl Editor {
                 prepared,
             );
         }
+        let t_content = std::time::Instant::now();
         // **The overlay card's preview is settled before the paint, because
         // the paint is what reads it.** Loading the selected match's file and
         // seeding its cursor is state work, and the card's preview band is a
@@ -880,7 +881,9 @@ impl Editor {
         // anchored to it (the completion list, the hover) are placed against
         // that cell now, so the one paint below carries them where they go.
         self.publish_popup_carets(size);
+        let t_desc = std::time::Instant::now();
         self.paint_shell();
+        let t_paint = std::time::Instant::now();
 
         let palette = self.shell_palette();
         let paints = match self.suppress_chrome_cells {
@@ -1252,12 +1255,15 @@ impl Editor {
         if total >= std::time::Duration::from_millis(12) {
             tracing::info!(
                 target: "paste_timing",
-                "render_phases: total={}ms pre={}ms layout={}ms reconcile={}ms paint={}ms (hooks={}ms)",
+                "render_phases: total={}ms pre={}ms layout={}ms reconcile={}ms content={}ms prepaint={}ms paint={}ms post={}ms (hooks={}ms)",
                 total.as_millis(),
                 t_prep.duration_since(t_render).as_millis(),
                 t_layout.duration_since(t_prep).as_millis(),
                 t_reconcile.duration_since(t_layout).as_millis(),
-                total.saturating_sub(t_reconcile.duration_since(t_render)).as_millis(),
+                t_content.duration_since(t_reconcile).as_millis(),
+                t_desc.duration_since(t_content).as_millis(),
+                t_paint.duration_since(t_desc).as_millis(),
+                total.saturating_sub(t_paint.duration_since(t_render)).as_millis(),
                 plugin_hooks_ms,
             );
         }
