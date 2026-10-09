@@ -165,6 +165,11 @@ pub struct FileExplorerSlotOverrideCache {
     direct_leading: std::collections::HashMap<std::path::PathBuf, CachedLeadingOverride>,
     direct_trailing: std::collections::HashMap<std::path::PathBuf, CachedTrailingOverride>,
     direct_name_color: std::collections::HashMap<std::path::PathBuf, CachedNameColorOverride>,
+    /// The subset of `direct_name_color` whose entries set
+    /// [`FileExplorerSlotEntry::apply_to_children`]. Kept apart so the common
+    /// case — no entry inherits — pays an `is_empty()` check instead of an
+    /// ancestor walk on every row of every frame.
+    inherited_name_color: std::collections::HashMap<std::path::PathBuf, CachedNameColorOverride>,
 }
 
 impl FileExplorerSlotOverrideCache {
@@ -179,6 +184,7 @@ impl FileExplorerSlotOverrideCache {
         let mut direct_leading = std::collections::HashMap::new();
         let mut direct_trailing = std::collections::HashMap::new();
         let mut direct_name_color = std::collections::HashMap::new();
+        let mut inherited_name_color = std::collections::HashMap::new();
 
         for slot in slots {
             if !slot.path.starts_with(root) {
@@ -239,6 +245,17 @@ impl FileExplorerSlotOverrideCache {
                     symlink_mappings,
                     |map, path, value| insert_best_cached(map, path, value, |entry| entry.priority),
                 );
+                if slot.apply_to_children {
+                    insert_with_aliases(
+                        &mut inherited_name_color,
+                        &slot.path,
+                        &cached,
+                        symlink_mappings,
+                        |map, path, value| {
+                            insert_best_cached(map, path, value, |entry| entry.priority)
+                        },
+                    );
+                }
             }
         }
 
@@ -246,6 +263,7 @@ impl FileExplorerSlotOverrideCache {
             direct_leading,
             direct_trailing,
             direct_name_color,
+            inherited_name_color,
         }
     }
 
@@ -258,7 +276,23 @@ impl FileExplorerSlotOverrideCache {
     }
 
     fn name_color_override_for_path(&self, path: &Path) -> Option<&CachedNameColorOverride> {
-        self.direct_name_color.get(path)
+        if let Some(direct) = self.direct_name_color.get(path) {
+            return Some(direct);
+        }
+        // No entry for this exact path: an ancestor that opted into
+        // `apply_to_children` colours it. This is the lookup that lets a plugin
+        // style a subtree with one entry instead of one per descendant — the
+        // same trade VS Code's decoration provider (asked per rendered row)
+        // and IntelliJ's tree painter (inherits while painting) both make.
+        //
+        // The walk is bounded by the path's own depth and every key lives under
+        // the explorer root, so it cannot run away.
+        if self.inherited_name_color.is_empty() {
+            return None;
+        }
+        path.ancestors()
+            .skip(1)
+            .find_map(|ancestor| self.inherited_name_color.get(ancestor))
     }
 
     pub fn has_trailing_override_for_path(&self, path: &Path) -> bool {
@@ -391,6 +425,7 @@ mod tests {
                 suppress_trailing: false,
                 name_color: Some(OverlayColorSpec::ThemeKey("syntax.type".into())),
                 suppress_name_color: false,
+                apply_to_children: false,
                 priority: 10,
             }],
             Path::new("/repo"),
@@ -427,6 +462,7 @@ mod tests {
                 suppress_trailing: true,
                 name_color: None,
                 suppress_name_color: true,
+                apply_to_children: false,
                 priority: 10,
             }],
             Path::new("/repo"),
@@ -447,5 +483,99 @@ mod tests {
         let resolved = default_slot_providers().resolver().resolve(&context);
         assert!(resolved.trailing.is_none());
         assert!(resolved.name_color_hint.is_none());
+    }
+
+    /// `apply_to_children` is what lets a plugin colour a whole subtree with one
+    /// entry: the alternative is shipping an entry per descendant, which for
+    /// one repo meant 2177 entries and a 457 KB payload on the editor thread.
+    #[test]
+    fn apply_to_children_colours_descendants_without_extra_entries() {
+        let gray = OverlayColorSpec::ThemeKey("ui.fg".into());
+        let blue = OverlayColorSpec::ThemeKey("ui.file_status_modified_fg".into());
+        let mk = |path: &str, color: Option<OverlayColorSpec>, apply: bool| {
+            fresh_core::file_explorer::FileExplorerSlotEntry {
+                path: std::path::PathBuf::from(path),
+                leading: None,
+                suppress_leading: false,
+                trailing: None,
+                suppress_trailing: false,
+                name_color: color,
+                suppress_name_color: false,
+                apply_to_children: apply,
+                priority: 10,
+            }
+        };
+        let cache = FileExplorerSlotOverrideCache::rebuild(
+            vec![
+                mk("/repo/node_modules", Some(gray.clone()), true),
+                mk("/repo/src/App.java", Some(blue.clone()), false),
+            ],
+            Path::new("/repo"),
+            &std::collections::HashMap::new(),
+        );
+
+        // The directory itself, and anything under it, are covered.
+        assert!(cache.name_color_override_for_path(Path::new("/repo/node_modules")).is_some());
+        assert!(
+            cache
+                .name_color_override_for_path(Path::new("/repo/node_modules/pkg/index.js"))
+                .is_some()
+        );
+        assert!(
+            cache
+                .name_color_override_for_path(Path::new("/repo/node_modules/a/b/c/d.js"))
+                .is_some()
+        );
+
+        // An entry that did NOT opt in stays exact: no leaking onto children.
+        assert!(cache.name_color_override_for_path(Path::new("/repo/src/App.java")).is_some());
+        assert!(cache.name_color_override_for_path(Path::new("/repo/src/Other.java")).is_none());
+        assert!(cache.name_color_override_for_path(Path::new("/repo/src")).is_none());
+    }
+
+    /// A direct entry must win over an inherited one, or a plugin could never
+    /// highlight one file inside a subtree it has coloured.
+    #[test]
+    fn direct_entry_beats_an_inherited_one() {
+        let gray = OverlayColorSpec::ThemeKey("ui.fg".into());
+        let red = OverlayColorSpec::ThemeKey("ui.file_status_deleted_fg".into());
+        let cache = FileExplorerSlotOverrideCache::rebuild(
+            vec![
+                fresh_core::file_explorer::FileExplorerSlotEntry {
+                    path: std::path::PathBuf::from("/repo/build"),
+                    leading: None,
+                    suppress_leading: false,
+                    trailing: None,
+                    suppress_trailing: false,
+                    name_color: Some(gray),
+                    suppress_name_color: false,
+                    apply_to_children: true,
+                    priority: 10,
+                },
+                fresh_core::file_explorer::FileExplorerSlotEntry {
+                    path: std::path::PathBuf::from("/repo/build/keep.txt"),
+                    leading: None,
+                    suppress_leading: false,
+                    trailing: None,
+                    suppress_trailing: false,
+                    name_color: Some(red),
+                    suppress_name_color: false,
+                    apply_to_children: false,
+                    priority: 10,
+                },
+            ],
+            Path::new("/repo"),
+            &std::collections::HashMap::new(),
+        );
+
+        let inherited = cache
+            .name_color_override_for_path(Path::new("/repo/build/other.txt"))
+            .map(|c| c.color.clone());
+        let direct = cache
+            .name_color_override_for_path(Path::new("/repo/build/keep.txt"))
+            .map(|c| c.color.clone());
+        assert_ne!(inherited, direct, "a direct entry must not be overridden");
+        assert!(direct.is_some());
+        assert!(inherited.is_some());
     }
 }

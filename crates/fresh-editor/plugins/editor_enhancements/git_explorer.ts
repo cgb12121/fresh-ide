@@ -252,7 +252,8 @@ export async function refreshCustomGitExplorer() {
       rawPath: string,
       nameColor: unknown,
       priority: number,
-      suppressTrailing = true
+      suppressTrailing = true,
+      applyToChildren = false,
     ) {
       for (const p of getPathVariants(rawPath)) {
         const key = p.toLowerCase();
@@ -262,6 +263,7 @@ export async function refreshCustomGitExplorer() {
           path: p,
           nameColor,
           suppressTrailing,
+          applyToChildren,
           priority,
         });
       }
@@ -278,9 +280,13 @@ export async function refreshCustomGitExplorer() {
       addSlot(slot.path as string, slot.nameColor, 120, false);
     }
 
-    // 3. Gitignored folders: Muted gray ([84, 110, 122]) - Priority 80
+    // 3. Gitignored folders: Muted gray ([84, 110, 122]) - Priority 80.
+    // `applyToChildren` lets the editor colour everything inside without this
+    // plugin shipping an entry per descendant — the same trade VS Code's
+    // decoration provider (asked per rendered row) and IntelliJ's tree painter
+    // (inherits while painting) make.
     for (const p of ignoredDirs) {
-      addSlot(p, COLORS.ignored, 80, true);
+      addSlot(p, COLORS.ignored, 80, true, true);
     }
 
     // 4. Gitignored files: Muted gray ([84, 110, 122]) - Priority 80

@@ -92,6 +92,20 @@ pub struct FileExplorerSlotEntry {
     /// Explicitly suppress compatibility filename colouring for this path.
     #[serde(default)]
     pub suppress_name_color: bool,
+    /// Apply this entry's filename colour to descendants that carry no entry of
+    /// their own, rather than to this exact path only.
+    ///
+    /// A plugin that wants to style a whole subtree ("everything git ignores is
+    /// muted gray") otherwise has to ship one entry per descendant — 2177
+    /// entries and a 457 KB payload for one repo, which the editor thread then
+    /// rebuilds a cache for. With this flag the plugin ships the directory
+    /// alone and the explorer resolves descendants against it at lookup time,
+    /// which is what VS Code's pull-per-rendered-row decoration provider and
+    /// IntelliJ's paint-time inheritance both come down to.
+    ///
+    /// A direct entry always wins over an inherited one.
+    #[serde(default)]
+    pub apply_to_children: bool,
     /// Priority for display when multiple overrides exist (higher wins).
     #[serde(default)]
     pub priority: i32,
