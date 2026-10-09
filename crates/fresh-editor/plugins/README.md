@@ -33,6 +33,7 @@ This directory contains production-ready plugins for the editor. Plugins are wri
 | `color_highlighter.ts` | Highlights color codes with their actual colors |
 | `find_references.ts` | Find references across the codebase |
 | `clangd_support.ts` | Clangd-specific LSP features (switch header/source) |
+| `editor_enhancements.ts` | Git explorer customizer (throttled + deduped refresh), Java/XML/YAML/properties syntax enhancers, and a CRLF-safe git gutter |
 
 ### Editing Modes
 
