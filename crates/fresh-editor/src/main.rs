@@ -6774,14 +6774,29 @@ where
         {
             let r0 = Instant::now();
             let was_paste_pending = editor.is_paste_pending();
+            // Split the draw into the part the editor builds (widget layout,
+            // style resolution, overlay lookup) and the part the terminal
+            // backend writes. A single `render: 24ms` line does not say which
+            // half is slow, and the two have completely different fixes: one
+            // is code in this crate, the other is the Windows console.
+            let mut core = std::time::Duration::ZERO;
             {
                 let _span = tracing::info_span!("terminal_draw").entered();
                 use crossterm::ExecutableCommand;
                 stdout().execute(crossterm::terminal::BeginSynchronizedUpdate)?;
-                terminal.draw(|frame| editor.render(frame))?;
+                terminal.draw(|frame| {
+                    let t = Instant::now();
+                    editor.render(frame);
+                    core += t.elapsed();
+                })?;
                 stdout().execute(crossterm::terminal::EndSynchronizedUpdate)?;
             }
-            tracing::info!(target: "paste_timing", "render: {}ms (paste_pending={})", r0.elapsed().as_millis(), was_paste_pending);
+            let total = r0.elapsed();
+            tracing::info!(target: "paste_timing", "render: {}ms (core={}ms io={}ms paste_pending={})",
+                total.as_millis(),
+                core.as_millis(),
+                total.saturating_sub(core).as_millis(),
+                was_paste_pending);
             last_render = Instant::now();
             needs_render = false;
         }
