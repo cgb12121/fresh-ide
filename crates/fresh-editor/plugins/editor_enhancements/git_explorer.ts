@@ -7,6 +7,7 @@ import {
   normalizePath,
   compareByPath,
   getPathVariants,
+  payloadSignature,
 } from "./common.ts";
 import type { Decoration, RGB } from "./common.ts";
 
@@ -14,10 +15,25 @@ import type { Decoration, RGB } from "./common.ts";
 // Git Explorer Refresh Logic
 // ---------------------------------------------------------------------------
 
-// Perf: the repo walk + decoration payload build below is expensive (spawn
-// git, walk the tree). It used to run once per hook fire, so every focus/save
-// re-walked the tree. These throttle it to at most GIT_EXPLORER_MIN_INTERVAL_MS
-// and dedupe identical payloads.
+editor.defineConfigBoolean("deepIgnoredEntries", {
+  default: false,
+  description:
+    "Also gray every entry INSIDE gitignored directories (needs a full repo walk: ~1300 readDir calls per refresh)",
+});
+
+/** `true` restores walking the whole repo to style the *contents* of ignored
+ *  directories. Off by default: `git status --ignored` already reports an
+ *  ignored directory collapsed to one entry, so that walk existed only to add
+ *  ~2200 muted slots (a 457KB payload) for entries whose status never
+ *  changes. */
+function deepIgnoredEntries(): boolean {
+  const cfg = (editor.getPluginConfig() ?? {}) as { deepIgnoredEntries?: boolean };
+  return cfg.deepIgnoredEntries === true;
+}
+
+// Perf: the refresh is throttled to at most GIT_EXPLORER_MIN_INTERVAL_MS and the
+// payload is deduped, so a repo whose git status has not changed costs one
+// git spawn and zero editor-thread work.
 
 /** Highest frequency the repo walk is allowed to run at. */
 export const GIT_EXPLORER_MIN_INTERVAL_MS = 1500;
@@ -78,10 +94,14 @@ export async function refreshCustomGitExplorer() {
     const repoRoot = normalizePath(rootRes.stdout.trim());
     const repoRootLower = repoRoot.toLowerCase();
 
-    // Query git status with porcelain v1, null terminator, and ignored entries
+    // Query git status with porcelain v1, null terminator, and ignored entries.
+    // `--ignored=matching` instead of the default `--ignored=traditional`:
+    // both report an ignored directory collapsed to one `!! dir/` entry, but
+    // `matching` does not enumerate the files underneath it — measured on this
+    // repo, 78ms vs 632ms (git 2.45).
     const statusRes = await editor.spawnProcess(
       "git",
-      ["status", "--porcelain=v1", "-z", "--ignored"],
+      ["status", "--porcelain=v1", "-z", "--ignored=matching"],
       repoRoot
     );
     if (statusRes.exit_code !== 0) {
@@ -221,7 +241,9 @@ export async function refreshCustomGitExplorer() {
       }
     }
 
-    walk(repoRoot, 0, false);
+    if (deepIgnoredEntries()) {
+      walk(repoRoot, 0, false);
+    }
 
     const allSlots: Record<string, unknown>[] = [];
     const seenSlots = new Set<string>();
@@ -284,8 +306,7 @@ export async function refreshCustomGitExplorer() {
     // stable repo could still hash differently and defeat the guard).
     allSlots.sort(compareByPath);
     allDecorations.sort(compareByPath);
-    const payloadSig =
-      JSON.stringify(allSlots) + "\u0000" + JSON.stringify(allDecorations);
+    const payloadSig = payloadSignature(allSlots, allDecorations);
     if (payloadSig === lastExplorerPayloadSig) {
       return;
     }

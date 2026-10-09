@@ -10,9 +10,12 @@ import { requestBufferVisuals } from "./editor_enhancements/visuals.ts";
  * custom visuals on top of Fresh:
  *
  * 1. Git Explorer customizer: Sea Blue/Green changed folders, muted gray
- *    ignored entries, white clean folders, full M/U/A/!/D/R badges. The repo
- *    walk is throttled and the decoration payload is deduped (see
- *    `editor_enhancements/git_explorer.ts`).
+ *    ignored entries, white clean folders, full M/U/A/!/D/R badges. Ignored
+ *    entries come straight from `git status --ignored=matching` (no repo
+ *    walk), the refresh is throttled, and an unchanged payload is never
+ *    re-applied. Set `plugins.editor_enhancements.deepIgnoredEntries` to also
+ *    gray the contents of ignored directories, at the cost of a full walk
+ *    (see `editor_enhancements/git_explorer.ts`).
  * 2. Java syntax enhancer: package-prefix dimming, annotations, types,
  *    methods, variables, constants (`editor_enhancements/syntax_java.ts`).
  * 3. XML / YAML / properties enhancers.

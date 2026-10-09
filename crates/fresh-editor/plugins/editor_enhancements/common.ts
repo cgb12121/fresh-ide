@@ -151,6 +151,46 @@ export function getPathVariants(p: string): string[] {
   return [clean];
 }
 
+/** Fingerprint of a decoration payload, used to skip a no-op apply.
+ *
+ * Two independent FNV-1a accumulators over the fields that actually reach the
+ * editor. This replaced `JSON.stringify(slots) + JSON.stringify(decorations)`,
+ * which built a ~457KB temporary string twice per refresh purely to answer
+ * "did anything change?" — on the payload this plugin used to emit. */
+export function payloadSignature(
+  slots: Record<string, unknown>[],
+  decorations: Record<string, unknown>[]
+): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const mix = (v: unknown) => {
+    const s = typeof v === "string" ? v : String(v);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193);
+      h2 = Math.imul(h2 ^ c, 0x85ebca6b);
+    }
+    // Field separator so ["ab","c"] and ["a","bc"] hash differently.
+    h1 = Math.imul(h1 ^ 0x2f, 0x01000193);
+    h2 = Math.imul(h2 ^ 0x2f, 0x85ebca6b);
+  };
+
+  for (const s of slots) {
+    mix(s.path);
+    mix(s.nameColor);
+    mix(s.priority);
+    mix(s.suppressTrailing);
+  }
+  for (const d of decorations) {
+    mix(d.path);
+    mix(d.symbol);
+    mix(d.color);
+    mix(d.priority);
+  }
+
+  return (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16);
+}
+
 /** Char-index -> byte-offset table for one text, used by every syntax scanner. */
 export function computeCharToByteOffsets(text: string): Uint32Array {
   const offsets = new Uint32Array(text.length + 1);
