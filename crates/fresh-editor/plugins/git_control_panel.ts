@@ -437,7 +437,7 @@ export function buildGitPanelSpec(): WidgetSpec {
     : "no-repo";
   children.push(
     row(
-      label(`\u{e702} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
+      label(`\u{f1d3} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
       flexSpacer(),
       button("⟳", {
         key: "git_refresh",
@@ -792,7 +792,9 @@ const registry = getViewRegistry();
 registry.registerView({
   id: "git",
   title: "Source Control & Git Graph",
-  icon: "\u{e702}",
+  icon: "\u{f1d3}", // Nerd Font md-source_branch. The old \u{e702} is a Powerline
+                  // codepoint, which renders as a branch in some terminals and as
+                  // a box-drawing glyph in others.
   hotkey: "Ctrl+Shift+G",
   order: 20,
   onActivate: () => {

@@ -40,7 +40,8 @@ function getOrchestratorApi(): OrchestratorApi | null {
 registry.registerView({
   id: "explorer",
   title: "Explorer",
-  icon: "\u{f07c}", // Nerd Font folder-open
+  icon: "\u{f07b}", // Nerd Font md-folder (solid; f07c is the open folder, which
+                   // reads as "currently open" rather than "Explorer")
   hotkey: "Ctrl+Shift+E",
   order: 10,
   onActivate: () => {

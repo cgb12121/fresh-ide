@@ -19097,9 +19097,7 @@ editor.addMenuItem({
 
 // Copilot-style entry at the far left of the menu bar. It routes to the same
 // Agent/Chat dock exposed by the Activity Bar.
-editor.addTopLevelActionMenu(
-  "Chat",
-  "◉ Chat",
-  "orchestrator_dock_toggle",
-  "File",
-);
+//
+// Removed: that dock is already reachable from the Activity Bar's Agent
+// Sessions button and from View > Agent Dock, so the menu-bar entry was a
+// second door to one room.
