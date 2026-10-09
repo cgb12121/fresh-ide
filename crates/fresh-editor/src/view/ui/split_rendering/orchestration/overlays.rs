@@ -162,6 +162,7 @@ pub(crate) fn decoration_context(
     fold_indicators_visible: bool,
 ) -> DecorationContext {
     use crate::view::folding::indent_folding;
+    let t_all = std::time::Instant::now();
 
     // Extend highlighting range by ~1 viewport size before/after for better
     // context. Helps tree-sitter parse multi-line constructs that span
@@ -172,6 +173,7 @@ pub(crate) fn decoration_context(
         .saturating_add(viewport_size)
         .min(state.buffer.len());
 
+    let t_syntax = std::time::Instant::now();
     let highlight_spans = state.highlighter.highlight_viewport(
         &state.buffer,
         highlight_start,
@@ -179,6 +181,8 @@ pub(crate) fn decoration_context(
         theme,
         highlight_context_bytes,
     );
+    let syntax_ms = t_syntax.elapsed();
+    let t_overlays = std::time::Instant::now();
 
     // Update reference highlight overlays (debounced; creates overlays that
     // auto-adjust).
@@ -255,6 +259,7 @@ pub(crate) fn decoration_context(
     let is_compose = matches!(view_mode, ViewMode::PageView);
     let md_emphasis_ns = crate::view::compose_only::md_emphasis_namespace();
     let mut semantic_token_spans = Vec::new();
+    let t_query = std::time::Instant::now();
     let mut viewport_overlays = Vec::new();
     for (overlay, range) in
         state
@@ -280,6 +285,27 @@ pub(crate) fn decoration_context(
         }
 
         viewport_overlays.push((overlay.clone(), range));
+    }
+
+    // Which half of "decorate the viewport" costs. `decoration_context` is not
+    // only syntax: it also refreshes the reference-highlight, cursor-line and
+    // bracket-highlight overlays, then walks every overlay in the viewport.
+    // A slow pass only becomes actionable once those are told apart.
+    let query_ms = t_query.elapsed();
+    let overlays_ms = t_overlays.elapsed();
+    let all_ms = t_all.elapsed();
+    if all_ms >= std::time::Duration::from_millis(8) {
+        tracing::info!(
+            target: "paste_timing",
+            "deco_parts: total={}ms syntax={}ms overlays={}ms query={}ms rest={}ms",
+            all_ms.as_millis(),
+            syntax_ms.as_millis(),
+            overlays_ms.as_millis(),
+            query_ms.as_millis(),
+            all_ms
+                .saturating_sub(syntax_ms + overlays_ms + query_ms)
+                .as_millis(),
+        );
     }
 
     // Sort overlays by priority (ascending) so higher priority overlays are
