@@ -241,6 +241,10 @@ impl Editor {
     pub fn render(&mut self, frame: &mut Frame) {
         let _span = tracing::info_span!("render").entered();
         let size = frame.area();
+        // Phase timers for the render path, reported at the bottom of this
+        // method. Four `Instant`s cost nothing measurable; without them a 24ms
+        // frame is just a number nobody can attribute.
+        let t_render = std::time::Instant::now();
 
         {
             let _s = tracing::info_span!("pre_layout_drain").entered();
@@ -312,6 +316,7 @@ impl Editor {
             let _s = tracing::info_span!("prepare_visible_buffers").entered();
             self.prepare_visible_buffers_for_render();
         }
+        let t_prep = std::time::Instant::now();
 
         // Refresh search highlights only during incremental search (when prompt is active)
         // After search is confirmed, overlays exist for ALL matches and shouldn't be overwritten
@@ -397,6 +402,7 @@ impl Editor {
         // Retained for the callers that ask between frames where a pane is —
         // the same rects this frame paints with. See `Window::pane_rects`.
         self.active_window_mut().set_pane_rects(pane_rects.clone());
+        let t_layout = std::time::Instant::now();
         // The shell's BACKGROUND band: everything the tree owns that is not a
         // `Layer`, painted *before* every legacy painter so they land on top
         // of it — the mirror of the overlay band at the end of this method.
@@ -455,6 +461,10 @@ impl Editor {
                 &pane_chrome,
             )
         };
+        let t_reconcile = std::time::Instant::now();
+        // Filled in by the `lines_changed` dispatch below; reported with the
+        // phase split so plugin cost inside the paint is visible.
+        let mut plugin_hooks_ms: u128 = 0;
         // Note: Tabs are now rendered within each split by SplitRenderer
 
         // Trigger lines_changed hooks for newly visible lines in all visible buffers
@@ -802,6 +812,7 @@ impl Editor {
                 total_new_lines += added;
             }
             let hooks_elapsed = hooks_start.elapsed();
+            plugin_hooks_ms = hooks_elapsed.as_millis() as u128;
             tracing::trace!(
                 new_lines = total_new_lines,
                 elapsed_ms = hooks_elapsed.as_millis(),
@@ -1234,6 +1245,22 @@ impl Editor {
 
         // Layout and scroll settle during a frame; plugins read them back.
         self.mark_plugin_snapshot_dirty();
+
+        // Where the frame went. Only slow frames are reported, so an idle
+        // editor logs nothing and a log full of these is a real signal.
+        let total = t_render.elapsed();
+        if total >= std::time::Duration::from_millis(12) {
+            tracing::info!(
+                target: "paste_timing",
+                "render_phases: total={}ms pre={}ms layout={}ms reconcile={}ms paint={}ms (hooks={}ms)",
+                total.as_millis(),
+                t_prep.duration_since(t_render).as_millis(),
+                t_layout.duration_since(t_prep).as_millis(),
+                t_reconcile.duration_since(t_layout).as_millis(),
+                total.saturating_sub(t_reconcile.duration_since(t_render)).as_millis(),
+                plugin_hooks_ms,
+            );
+        }
     }
 
     /// The Confirm-each option's live value when it is shown (replace
