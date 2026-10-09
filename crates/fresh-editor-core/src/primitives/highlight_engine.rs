@@ -670,6 +670,13 @@ impl ParseSnapshot {
 /// Small/large file threshold (whole-file cache vs viewport window).
 const MAX_PARSE_BYTES: usize = 1024 * 1024;
 
+/// Files at or below this are parsed whole on the cold path, so that scrolling
+/// never re-parses. Chosen to stay well under `MAX_PARSE_BYTES` (where the
+/// whole-file cache already applies) and to keep the one-off cold cost bounded:
+/// measured ~25-36ms for a 34 KB Java file, so ~200ms in a debug build for the
+/// 256 KB ceiling.
+const WHOLE_FILE_PARSE_BYTES: usize = 256 * 1024;
+
 /// Distance between checkpoint anchors. Smaller = faster convergence on edit.
 const CHECKPOINT_INTERVAL: usize = 256;
 
@@ -1726,7 +1733,20 @@ impl TextMateEngine {
         context_bytes: usize,
     ) -> Vec<HighlightSpan> {
         let buf_len = buffer.len();
-        let (desired_parse_start, parse_end) = if buf_len <= MAX_PARSE_BYTES {
+        // A cold highlighter on a file this size parses the WHOLE file once,
+        // and then every frame after it — including every scroll step — is a
+        // cache hit. Before this, the parse window tracked the viewport
+        // (`viewport_end + context`), so scrolling pushed its end past the
+        // cache and the highlighter re-parsed on the way down: measured at
+        // 25-36ms per frame on a 34 KB Java file, once per scroll step.
+        //
+        // Only on the cold path. After an edit the cache is dirty, and a
+        // whole-file re-parse from the edit point would be far worse than the
+        // viewport-windowed update that handles it.
+        let cold = self.cache.is_none();
+        let (desired_parse_start, parse_end) = if cold && buf_len <= WHOLE_FILE_PARSE_BYTES {
+            (0, buf_len)
+        } else if buf_len <= MAX_PARSE_BYTES {
             (0, (viewport_end + context_bytes).min(buf_len))
         } else {
             let s = viewport_start.saturating_sub(context_bytes);
