@@ -38,6 +38,9 @@ import {
   gitShowCommit,
   getGitFileSnapshots,
   getGitFileDiffInfo,
+  collapseUnchangedRanges,
+  clearGitFileCaches,
+  MAX_CHANGED_LINES_FOR_PATCH,
   type GitStatusSummary,
   type GitGraphLine,
   type GitFileChange,
@@ -62,6 +65,12 @@ let commitPreviewTopLine = 1;
 let fileDiffPreview: { compositeId: number; oldBufferId: number; newBufferId: number } | null = null;
 let fileDiffRequest = 0;
 const deferredDiffSourceCleanup: Array<{ oldBufferId: number; newBufferId: number }> = [];
+/** Unchanged lines kept on each side of a hunk in the file review, the same
+ *  default VS Code ships as `diffEditor.hideUnchangedRegions.contextLineCount`. */
+const DIFF_CONTEXT_LINES = 3;
+/** The two source buffers of the file review, kept across clicks. The composite
+ *  is cheap to rebuild; two virtual buffers per click are not. */
+let diffSourceBuffers: { oldId: number; newId: number } | null = null;
 const GIT_ADDED_COLOR: [number, number, number] = [86, 211, 100];
 const GIT_DELETED_COLOR: [number, number, number] = [248, 81, 73];
 
@@ -86,6 +95,9 @@ export async function refreshGitData(): Promise<void> {
 // spawning `git log` after every + / - click.
 async function refreshGitStatusData(): Promise<void> {
   try {
+    // The working tree just moved under us (staging, discard, save), so any
+    // memoized blob from before this refresh is no longer the truth.
+    clearGitFileCaches();
     statusSummary = await getGitStatus(editor);
   } catch {
     statusFeedback = "Failed to refresh git status";
@@ -210,6 +222,52 @@ function entriesForFile(content: string): TextPropertyEntry[] {
   return content.split("\n").map((line) => ({ text: `${line}\n` }));
 }
 
+/**
+ * Fill the file review's two source buffers, reusing them across clicks.
+ *
+ * The composite is a layout record and is cheap to rebuild; creating two
+ * virtual buffers per click is not, and each one pays full buffer ingest on
+ * top. `setVirtualBufferContent` is the same call the commit preview already
+ * uses to reuse its buffer; if it declines (buffer closed, or an older host)
+ * we fall back to creating a fresh pair.
+ */
+async function loadDiffSources(
+  name: string,
+  oldText: string,
+  newText: string,
+): Promise<{ oldId: number; newId: number } | null> {
+  const reused = diffSourceBuffers;
+  if (
+    reused &&
+    editor.setVirtualBufferContent(reused.oldId, entriesForFile(oldText)) &&
+    editor.setVirtualBufferContent(reused.newId, entriesForFile(newText))
+  ) {
+    return reused;
+  }
+  diffSourceBuffers = null;
+
+  const oldRes = await editor.createVirtualBuffer({
+    name,
+    mode: "normal",
+    entries: entriesForFile(oldText),
+    readOnly: true,
+    editingDisabled: true,
+    hiddenFromTabs: true,
+    showLineNumbers: true,
+  });
+  const newRes = await editor.createVirtualBuffer({
+    name,
+    mode: "normal",
+    entries: entriesForFile(newText),
+    readOnly: true,
+    editingDisabled: true,
+    hiddenFromTabs: true,
+    showLineNumbers: true,
+  });
+  diffSourceBuffers = { oldId: oldRes.bufferId, newId: newRes.bufferId };
+  return diffSourceBuffers;
+}
+
 async function previewChangedFile(path: string, staged: boolean): Promise<void> {
   const request = ++fileDiffRequest;
   const repoRoot = statusSummary?.repoRoot;
@@ -221,8 +279,8 @@ async function previewChangedFile(path: string, staged: boolean): Promise<void> 
     updatePanel();
     return;
   }
-  if (diffInfo.changedLines > 2000) {
-    statusFeedback = `Diff skipped for responsiveness (>2,000 changed lines): ${path}`;
+  if (diffInfo.changedLines > MAX_CHANGED_LINES_FOR_PATCH) {
+    statusFeedback = `Diff skipped for responsiveness (>${MAX_CHANGED_LINES_FOR_PATCH.toLocaleString("en-US")} changed lines): ${path}`;
     updatePanel();
     return;
   }
@@ -243,60 +301,44 @@ async function previewChangedFile(path: string, staged: boolean): Promise<void> 
     : snapshots.oldText === snapshots.newText
     ? []
     : [{ oldStart: 0, oldCount: 0, newStart: 0, newCount: snapshots.newText.split("\n").length }];
-  statusFeedback = "";
-  const oldRes = await editor.createVirtualBuffer({
-    name: path,
-    mode: "normal",
-    entries: entriesForFile(snapshots.oldText),
-    readOnly: true,
-    editingDisabled: true,
-    hiddenFromTabs: true,
-    showLineNumbers: true,
-  });
-  if (request !== fileDiffRequest) {
-    editor.closeBuffer(oldRes.bufferId, true);
-    return;
-  }
-  const newRes = await editor.createVirtualBuffer({
-    name: path,
-    mode: "normal",
-    entries: entriesForFile(snapshots.newText),
-    readOnly: true,
-    editingDisabled: true,
-    hiddenFromTabs: true,
-    showLineNumbers: true,
-  });
-  if (request !== fileDiffRequest) {
-    editor.closeBuffer(oldRes.bufferId, true);
-    editor.closeBuffer(newRes.bufferId, true);
-    return;
-  }
 
+  // Collapse everything the reader does not need BEFORE it becomes a buffer.
+  // The panes are ordinary editor buffers, so their per-frame layout cost
+  // scales with their size — this is what keeps a 500 KB file review as cheap
+  // as a 200-line one.
+  const collapsed = collapseUnchangedRanges(
+    snapshots.oldText,
+    snapshots.newText,
+    hunks,
+    DIFF_CONTEXT_LINES,
+  );
+  statusFeedback = "";
+  const sources = await loadDiffSources(path, collapsed.oldText, collapsed.newText);
+  if (!sources) return;
+  if (request !== fileDiffRequest) return;
   const compositeId = await editor.createCompositeBuffer({
     name: `Git Diff: ${path}`,
     mode: "normal",
     layout: { type: "side-by-side", ratios: [0.5, 0.5], showSeparator: true },
     sources: [
       {
-        bufferId: oldRes.bufferId,
+        bufferId: sources.oldId,
         label: staged ? "HEAD" : "INDEX",
         editable: false,
         style: { gutterStyle: "diff-markers" },
       },
       {
-        bufferId: newRes.bufferId,
+        bufferId: sources.newId,
         label: staged ? "INDEX" : "WORKING TREE",
         editable: false,
         style: { gutterStyle: "diff-markers" },
       },
     ],
-    hunks,
-    initialFocusHunk: hunks.length > 0 ? 0 : undefined,
+    hunks: collapsed.hunks,
+    initialFocusHunk: collapsed.hunks.length > 0 ? 0 : undefined,
   });
   if (request !== fileDiffRequest) {
     editor.closeCompositeBuffer(compositeId);
-    editor.closeBuffer(oldRes.bufferId, true);
-    editor.closeBuffer(newRes.bufferId, true);
     return;
   }
 
@@ -305,8 +347,6 @@ async function previewChangedFile(path: string, staged: boolean): Promise<void> 
   const splitId = editor.getActiveSplitId();
   if (!editor.setSplitBuffer(splitId, compositeId)) {
     editor.closeCompositeBuffer(compositeId);
-    editor.closeBuffer(oldRes.bufferId, true);
-    editor.closeBuffer(newRes.bufferId, true);
     statusFeedback = `Could not open diff for ${path}`;
     updatePanel();
     return;
@@ -314,11 +354,9 @@ async function previewChangedFile(path: string, staged: boolean): Promise<void> 
   editor.focusSplit(splitId);
 
   const previous = fileDiffPreview;
-  fileDiffPreview = { compositeId, oldBufferId: oldRes.bufferId, newBufferId: newRes.bufferId };
+  fileDiffPreview = { compositeId, oldBufferId: sources.oldId, newBufferId: sources.newId };
   if (previous) {
     editor.closeCompositeBuffer(previous.compositeId);
-    editor.closeBuffer(previous.oldBufferId, true);
-    editor.closeBuffer(previous.newBufferId, true);
   }
 }
 
@@ -330,6 +368,7 @@ editor.on("buffer_closed", (event: { buffer_id: number }) => {
   if (fileDiffPreview?.compositeId === closedId) {
     const closedPreview = fileDiffPreview;
     fileDiffPreview = null;
+    diffSourceBuffers = null;
     // Do not make editor RPC calls while the host is still dispatching the
     // close hook. Fresh timers are editor-owned; QuickJS has no global
     // setTimeout/setInterval APIs.
@@ -344,6 +383,13 @@ editor.on("buffer_closed", (event: { buffer_id: number }) => {
     commitPreviewSplitId = null;
     commitPreviewContent = "";
     commitPreviewTopLine = 1;
+  }
+  // A reused source buffer that went away must not be offered for reuse again.
+  if (
+    diffSourceBuffers &&
+    (diffSourceBuffers.oldId === closedId || diffSourceBuffers.newId === closedId)
+  ) {
+    diffSourceBuffers = null;
   }
 });
 

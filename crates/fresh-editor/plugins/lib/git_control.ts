@@ -157,28 +157,79 @@ export async function gitShowCommit(editor: EditorAPI, hash: string): Promise<st
   return await fetchCommitShow(editor, hash, repo.root);
 }
 
-/** Get bounded Git hunk metadata before loading file bodies or aligning panes. */
+/** Memoized per-file diff metadata and blob snapshots, keyed by repo + staged
+ *  flag + path. Every miss costs 1-3 `git.exe` spawns (~40ms each on Windows
+ *  regardless of how little they print), and the panel re-opens the same files
+ *  constantly — so a revisit is a map hit. Cleared whenever the panel
+ *  refreshes git status, which is the only moment a cached blob can be stale. */
+const diffInfoCache = new Map<string, GitFileDiffInfo>();
+const snapshotCache = new Map<string, { oldText: string; newText: string }>();
+
+export function clearGitFileCaches(): void {
+  diffInfoCache.clear();
+  snapshotCache.clear();
+}
+
+export interface GitDiffHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+}
+
+export interface GitFileDiffInfo {
+  changedLines: number;
+  binary: boolean;
+  hunks: GitDiffHunk[];
+}
+
+/** Above this many changed lines the viewer reports the count instead of
+ *  materialising the patch. */
+export const MAX_CHANGED_LINES_FOR_PATCH = 2000;
+
+/**
+ * Hunk metadata for one file, from ONE git process.
+ *
+ * `--numstat --unified=0` is a single call whose output is the numstat table
+ * first and the patch after it, so the size is known before the patch is read
+ * — the same "know the budget, then spend it" order VS Code's diff computer
+ * uses with `maxComputationTime` / `quitEarly`. This used to be two spawns,
+ * and on Windows `git.exe` startup dominated: ~40ms per call to move a few KB.
+ */
 export async function getGitFileDiffInfo(
   editor: EditorAPI,
   repoRoot: string,
   path: string,
   staged: boolean,
-): Promise<{ changedLines: number; binary: boolean; hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> }> {
+): Promise<GitFileDiffInfo> {
   const repo = { root: repoRoot };
+  const key = `${repoRoot}\u0000${staged ? 1 : 0}\u0000${path}`;
+  const memo = diffInfoCache.get(key);
+  if (memo) return memo;
+
   const stageArgs = staged ? ["--cached"] : [];
-  const statResult = await git(editor, repo, diffArgs(["diff"], ...stageArgs, "--numstat", "--", path));
-  if (statResult.exit_code !== 0) {
-    return { changedLines: 0, binary: false, hunks: [] };
+  const result = await git(
+    editor,
+    repo,
+    diffArgs(["diff"], ...stageArgs, "--numstat", "--unified=0", "--", path)
+  );
+  if (result.exit_code !== 0) {
+    const empty: GitFileDiffInfo = { changedLines: 0, binary: false, hunks: [] };
+    diffInfoCache.set(key, empty);
+    return empty;
   }
 
+  const lines = result.stdout.split("\n");
   let changedLines = 0;
   let binary = false;
-  const hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number }> = [];
-  for (const line of statResult.stdout.split("\n")) {
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) break;
     const firstTab = line.indexOf("\t");
-    if (firstTab < 0) continue;
+    if (firstTab < 0) break;
     const secondTab = line.indexOf("\t", firstTab + 1);
-    if (secondTab < 0) continue;
+    if (secondTab < 0) break;
     const added = line.slice(0, firstTab);
     const removed = line.slice(firstTab + 1, secondTab);
     if (added === "-" || removed === "-") {
@@ -187,28 +238,33 @@ export async function getGitFileDiffInfo(
       changedLines += (Number(added) || 0) + (Number(removed) || 0);
     }
   }
-  // Do not ask Git to materialize the patch for a file we will skip below.
-  if (binary || changedLines > 2000) return { changedLines, binary, hunks: [] };
-
-  const patchResult = await git(editor, repo, diffArgs(["diff"], ...stageArgs, "--unified=0", "--", path));
-  if (patchResult.exit_code !== 0) return { changedLines, binary, hunks: [] };
-  for (const line of patchResult.stdout.split("\n")) {
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-      if (!match) continue;
-      const oldLine = Number(match[1]);
-      const oldCount = match[2] === undefined ? 1 : Number(match[2]);
-      const newLine = Number(match[3]);
-      const newCount = match[4] === undefined ? 1 : Number(match[4]);
-      hunks.push({
-        oldStart: oldCount === 0 ? oldLine : oldLine - 1,
-        oldCount,
-        newStart: newCount === 0 ? newLine : newLine - 1,
-        newCount,
-      });
-    }
+  // Do not ask for a patch we will skip below.
+  if (binary || changedLines > MAX_CHANGED_LINES_FOR_PATCH) {
+    const bounded: GitFileDiffInfo = { changedLines, binary, hunks: [] };
+    diffInfoCache.set(key, bounded);
+    return bounded;
   }
-  return { changedLines, binary, hunks };
+
+  const hunks: GitDiffHunk[] = [];
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("@@")) continue;
+    const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+    const oldLine = Number(match[1]);
+    const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+    const newLine = Number(match[3]);
+    const newCount = match[4] === undefined ? 1 : Number(match[4]);
+    hunks.push({
+      oldStart: oldCount === 0 ? oldLine : oldLine - 1,
+      oldCount,
+      newStart: newCount === 0 ? newLine : newLine - 1,
+      newCount,
+    });
+  }
+  const info: GitFileDiffInfo = { changedLines, binary, hunks };
+  diffInfoCache.set(key, info);
+  return info;
 }
 
 /** Read the two snapshots compared by a staged or unstaged file review. */
@@ -218,6 +274,10 @@ export async function getGitFileSnapshots(
   path: string,
   staged: boolean,
 ): Promise<{ oldText: string; newText: string } | null> {
+  const key = `${repoRoot}\u0000${staged ? 1 : 0}\u0000${path}`;
+  const memo = snapshotCache.get(key);
+  if (memo) return memo;
+
   const repo = { root: repoRoot };
 
   const readObject = async (spec: string): Promise<string> => {
@@ -225,16 +285,133 @@ export async function getGitFileSnapshots(
     return result.exit_code === 0 ? result.stdout : "";
   };
 
+  let snapshots: { oldText: string; newText: string };
   if (staged) {
-    return {
+    snapshots = {
       oldText: await readObject(`HEAD:${path}`),
       newText: await readObject(`:${path}`),
     };
+  } else {
+    const oldText = await readObject(`:${path}`);
+    const absolutePath = editor.pathJoin(repo.root, path);
+    snapshots = { oldText, newText: editor.readFile(absolutePath) ?? "" };
+  }
+  snapshotCache.set(key, snapshots);
+  return snapshots;
+}
+
+export interface CollapsedDiff {
+  oldText: string;
+  newText: string;
+  /** Hunks rewritten to the collapsed coordinates, so the side-by-side panes
+   *  still align. */
+  hunks: GitDiffHunk[];
+  hiddenOldLines: number;
+  hiddenNewLines: number;
+}
+
+/**
+ * Keep only what a reader needs: every hunk plus `contextLines` of context
+ * around it, with one `... N unchanged lines ...` marker per skipped run.
+ *
+ * This is VS Code's `hideUnchangedRegions` (contextLineCount: 3), and its
+ * point is not prettiness. The review panes are ordinary buffers, so without
+ * this a 500 KB file becomes two 500 KB buffers — and a large buffer costs
+ * ~40ms of layout per frame per pane, paid again on every scroll.
+ */
+export function collapseUnchangedRanges(
+  oldText: string,
+  newText: string,
+  hunks: GitDiffHunk[],
+  contextLines: number,
+): CollapsedDiff {
+  const oldLines = oldText.length > 0 ? oldText.split("\n") : [];
+  const newLines = newText.length > 0 ? newText.split("\n") : [];
+
+  // No hunks: both sides are equal (or the hunk list was bounded away). Show
+  // the head of each so the panes are not blank, and say what was left out.
+  if (hunks.length === 0) {
+    const head = Math.max(contextLines * 4, 16);
+    const oldHead = oldLines.slice(0, head);
+    const newHead = newLines.slice(0, head);
+    return {
+      oldText: oldHead.join("\n"),
+      newText: newHead.join("\n"),
+      hunks: [],
+      hiddenOldLines: Math.max(0, oldLines.length - oldHead.length),
+      hiddenNewLines: Math.max(0, newLines.length - newHead.length),
+    };
   }
 
-  const oldText = await readObject(`:${path}`);
-  const absolutePath = editor.pathJoin(repo.root, path);
-  return { oldText, newText: editor.readFile(absolutePath) ?? "" };
+  interface Window {
+    start: number;
+    end: number;
+  }
+  const merge = (spans: Window[]): Window[] => {
+    const sorted = spans.slice().sort((a, b) => a.start - b.start);
+    const out: Window[] = [];
+    for (const span of sorted) {
+      const last = out[out.length - 1];
+      if (last && span.start <= last.end) {
+        last.end = Math.max(last.end, span.end);
+      } else {
+        out.push({ start: span.start, end: span.end });
+      }
+    }
+    return out;
+  };
+
+  const windowFor = (start: number, count: number, total: number): Window => ({
+    start: Math.max(0, start - contextLines),
+    end: Math.min(total, start + Math.max(count, 1) + contextLines),
+  });
+
+  const oldWindows = merge(hunks.map((h) => windowFor(h.oldStart, h.oldCount, oldLines.length)));
+  const newWindows = merge(hunks.map((h) => windowFor(h.newStart, h.newCount, newLines.length)));
+
+  const build = (
+    lines: string[],
+    windows: Window[],
+  ): { text: string; map: Map<number, number>; hidden: number } => {
+    const out: string[] = [];
+    const map = new Map<number, number>();
+    let hidden = 0;
+    let cursor = 0;
+    for (const w of windows) {
+      if (w.end <= w.start) continue;
+      if (w.start > cursor) {
+        hidden += w.start - cursor;
+        out.push(`... ${w.start - cursor} unchanged lines ...`);
+      }
+      for (let i = w.start; i < w.end; i++) {
+        map.set(i, out.length);
+        out.push(lines[i] ?? "");
+      }
+      cursor = Math.max(cursor, w.end);
+    }
+    if (cursor < lines.length) hidden += lines.length - cursor;
+    return { text: out.join("\n"), map, hidden };
+  };
+
+  const oldBuilt = build(oldLines, oldWindows);
+  const newBuilt = build(newLines, newWindows);
+
+  const remapped = hunks
+    .map((h) => ({
+      oldStart: oldBuilt.map.get(h.oldStart) ?? 0,
+      oldCount: h.oldCount,
+      newStart: newBuilt.map.get(h.newStart) ?? 0,
+      newCount: h.newCount,
+    }))
+    .sort((a, b) => a.oldStart - b.oldStart);
+
+  return {
+    oldText: oldBuilt.text,
+    newText: newBuilt.text,
+    hunks: remapped,
+    hiddenOldLines: oldBuilt.hidden,
+    hiddenNewLines: newBuilt.hidden,
+  };
 }
 
 /** Explicitly update remote tracking refs; this is never run as a side effect of refresh. */
