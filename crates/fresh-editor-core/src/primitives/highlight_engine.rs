@@ -675,6 +675,9 @@ const MAX_PARSE_BYTES: usize = 1024 * 1024;
 /// whole-file cache already applies) and to keep the one-off cold cost bounded:
 /// measured ~25-36ms for a 34 KB Java file, so ~200ms in a debug build for the
 /// 256 KB ceiling.
+///
+/// Not applied to a syntax that hosts embedded regions (Markdown fences, Vue
+/// blocks, embedded diffs) — see the `cold_whole` gate in `highlight_viewport`.
 const WHOLE_FILE_PARSE_BYTES: usize = 256 * 1024;
 
 /// Distance between checkpoint anchors. Smaller = faster convergence on edit.
@@ -1744,7 +1747,17 @@ impl TextMateEngine {
         // whole-file re-parse from the edit point would be far worse than the
         // viewport-windowed update that handles it.
         let cold = self.cache.is_none();
-        let (desired_parse_start, parse_end) = if cold && buf_len <= WHOLE_FILE_PARSE_BYTES {
+        // …but only for a syntax that does not HOST embedded regions.
+        //
+        // A Markdown fence is not a comment: every ``` block is parsed by its
+        // own child grammar (tsx, typescript, java, …), and the host pays for
+        // all of them in one pass. A 108 KB file with 348 fences parsed whole
+        // measured 331ms of syntax against ~60 visible lines — the whole-file
+        // parse that makes scrolling free for Java is exactly wrong here. The
+        // windowed path is cheap for these files precisely because a screenful
+        // of prose holds few fences.
+        let cold_whole = cold && buf_len <= WHOLE_FILE_PARSE_BYTES && self.embedding.is_empty();
+        let (desired_parse_start, parse_end) = if cold_whole {
             (0, buf_len)
         } else if buf_len <= MAX_PARSE_BYTES {
             (0, (viewport_end + context_bytes).min(buf_len))
