@@ -84,6 +84,7 @@ pub(crate) enum SidebarSectionKind {
 /// One section of the sidebar column.
 #[derive(Debug, Clone)]
 pub(crate) struct SidebarSection {
+    pub role: SectionRole,
     pub kind: SidebarSectionKind,
     /// The mounted panel, for a `Panel` section the plugin has mounted.
     pub panel: Option<super::FloatingWidgetState>,
@@ -111,6 +112,7 @@ pub(crate) struct SidebarSection {
 impl SidebarSection {
     pub(crate) fn explorer() -> SidebarSection {
         SidebarSection {
+            role: SectionRole::Section,
             kind: SidebarSectionKind::Explorer,
             panel: None,
             rows: 0,
@@ -132,6 +134,7 @@ impl SidebarSection {
         scope: SectionScope,
     ) -> SidebarSection {
         SidebarSection {
+            role: SectionRole::Section,
             kind: SidebarSectionKind::Panel {
                 key,
                 title,
@@ -172,6 +175,14 @@ impl SidebarSection {
             squeezed: self.squeezed,
         }
     }
+}
+
+/// Workbench panels opt in without changing ordinary sidebar accordions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionRole {
+    Section,
+    ActivityBar,
+    PrimaryView,
 }
 
 /// A divider drag in progress: which sections it moves and where they were.
@@ -328,21 +339,53 @@ impl super::Editor {
     /// a caller who cares picks its own order. The sidebar cares: the top
     /// section is the tree.
     pub(crate) fn resolve_sidebar_sections(&mut self, height: u16) -> Vec<u16> {
-        let body = body_rows(height, self.sidebar_sections.len());
-        let mut extents: Vec<Extent> = self.sidebar_sections.iter().map(|s| s.extent()).collect();
+        let visible = self.sidebar_content_indices();
+        let body = body_rows(height, visible.len());
+        let mut extents: Vec<Extent> = visible
+            .iter()
+            .map(|&i| self.sidebar_sections[i].extent())
+            .collect();
         squeeze(body, &mut extents);
-        let rows = distribute(body, &extents);
-        for ((s, e), r) in self
-            .sidebar_sections
-            .iter_mut()
-            .zip(extents)
-            .zip(rows.iter())
-        {
+        let sizes = distribute(body, &extents);
+        let mut rows = vec![0; self.sidebar_sections.len()];
+        for s in &mut self.sidebar_sections {
+            s.resolved = 0;
+        }
+        for ((i, e), r) in visible.into_iter().zip(extents).zip(sizes) {
+            let s = &mut self.sidebar_sections[i];
             s.collapsed = e.collapsed;
             s.squeezed = e.squeezed;
-            s.resolved = *r;
+            s.resolved = r;
+            rows[i] = r;
         }
         rows
+    }
+
+    pub(crate) fn activity_bar_index(&self) -> Option<usize> {
+        self.sidebar_sections
+            .iter()
+            .position(|s| s.role == SectionRole::ActivityBar)
+    }
+
+    pub(crate) fn sidebar_content_indices(&self) -> Vec<usize> {
+        if self.activity_bar_index().is_some() {
+            if !self.file_explorer_visible() {
+                return Vec::new();
+            }
+            if let Some(i) = self
+                .sidebar_sections
+                .iter()
+                .rposition(|s| s.role == SectionRole::PrimaryView)
+            {
+                return vec![i];
+            }
+        }
+        self.sidebar_sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.role != SectionRole::ActivityBar)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Open a collapsed section or collapse an open one — the header's
@@ -536,8 +579,10 @@ impl super::Editor {
         // state; this is the ask that `place_panel_in_sidebar` no longer
         // assumes (see `reveal_sidebar`). The column and the section are two
         // separate ways to be off screen, so focusing says both.
-        self.reveal_sidebar();
-        self.reveal_sidebar_section(index);
+        if self.sidebar_sections[index].role != SectionRole::ActivityBar {
+            self.reveal_sidebar();
+            self.reveal_sidebar_section(index);
+        }
         if self.dock.as_ref().is_some_and(|d| d.focused) {
             self.blur_floating_panel(super::PanelSlot::Dock);
         }
@@ -589,8 +634,11 @@ impl super::Editor {
             }
             None => None,
         };
+        let visible = self.sidebar_content_indices();
         let reachable = |i: usize| {
-            self.sidebar_sections[i].is_explorer() || self.sidebar_sections[i].panel.is_some()
+            (visible.contains(&i) || self.sidebar_sections[i].role == SectionRole::ActivityBar)
+                && (self.sidebar_sections[i].is_explorer()
+                    || self.sidebar_sections[i].panel.is_some())
         };
         let n = self.sidebar_sections.len();
         let target = match (forward, current) {

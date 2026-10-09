@@ -5055,6 +5055,8 @@ interface EditorAPI {
 	* names at runtime.
 	*/
 	addMenuItem(opts: AddMenuItemOptions): boolean;
+	/** Add an action menu before an existing top-level menu. */
+	addTopLevelActionMenu(id: string, label: string, action: string, before: string): boolean;
 	/**
 	* Contribute (or replace, or clear) menu rows for the LSP-Servers
 	* popup. Pass an empty `items` to clear this plugin's slice for
@@ -5279,6 +5281,10 @@ interface EditorAPI {
 	* a centered panel cover the whole frame over the dock), "sidebar"
 	* (`arg` = requested rows; re-anchors the panel as a sidebar section
 	* under the file explorer — "dock" / "center" re-anchor it back out),
+	* "activity_bar" (render this section as a persistent five-column
+	* navigation rail), "sidebar_view" (show this section as the primary
+	* view beside that rail), "activity_show" (on the rail: positive `arg`
+	* opens the content, zero hides it, negative toggles it),
 	* "sidebar_rows" (`arg` = requested rows for a section; a divider the
 	* user has dragged wins). See `PluginCommand::FloatingPanelControl`.
 	*/

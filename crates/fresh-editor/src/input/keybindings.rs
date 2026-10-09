@@ -5736,6 +5736,10 @@ mod tests {
             Action::all_action_names().into_iter().collect();
 
         const ALLOWED_PLUGIN_ACTIONS_IN_DEFAULTS: &[&str] = &[
+            "workbench_view_explorer",
+            "workbench_view_scm",
+            "workbench_view_extensions",
+            "workbench_view_agents",
             "start_search_replace",
             // Project Search & Replace match navigation (issue #2434) —
             // handled by the search_replace plugin; bound in the default

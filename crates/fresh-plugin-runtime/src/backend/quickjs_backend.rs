@@ -6926,6 +6926,35 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Add a top-level menu to the menu bar.
+    #[plugin_api(ts_return = "boolean")]
+    pub fn add_top_level_action_menu(
+        &self,
+        id: String,
+        label: String,
+        action: String,
+        before: String,
+    ) -> bool {
+        let menu = fresh_core::menu::Menu {
+            id: Some(id),
+            label,
+            items: vec![fresh_core::menu::MenuItem::Action {
+                label: "Open Chat".to_string(),
+                action,
+                args: Default::default(),
+                when: None,
+                checkbox: None,
+            }],
+            when: None,
+        };
+        self.command_sender
+            .send(PluginCommand::AddMenu {
+                menu,
+                position: fresh_core::api::MenuPosition::Before(before),
+            })
+            .is_ok()
+    }
+
     /// Contribute (or replace, or clear) menu rows for the LSP-Servers
     /// popup. Pass an empty `items` to clear this plugin's slice for
     /// the given language. See `PluginCommand::SetLspMenuContributions`.
@@ -7761,6 +7790,10 @@ impl JsEditorApi {
     /// a centered panel cover the whole frame over the dock), "sidebar"
     /// (`arg` = requested rows; re-anchors the panel as a sidebar section
     /// under the file explorer — "dock" / "center" re-anchor it back out),
+    /// "activity_bar" (render this section as a persistent five-column
+    /// navigation rail), "sidebar_view" (show this section as the primary
+    /// view beside that rail), "activity_show" (on the rail: positive `arg`
+    /// opens the content, zero hides it, negative toggles it),
     /// "sidebar_rows" (`arg` = requested rows for a section; a divider the
     /// user has dragged wins). See `PluginCommand::FloatingPanelControl`.
     #[qjs(rename = "floatingPanelControl")]

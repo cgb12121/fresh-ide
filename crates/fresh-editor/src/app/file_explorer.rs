@@ -133,10 +133,19 @@ impl Editor {
             if self.file_explorer().is_none() {
                 self.init_file_explorer();
             }
-            self.take_focus_for_file_explorer();
-            self.set_status_message(t!("explorer.focused").to_string());
-            self.active_window_mut()
-                .sync_file_explorer_to_active_file_with_feedback();
+            let primary = self.activity_bar_index().and_then(|_| {
+                self.sidebar_sections
+                    .iter()
+                    .rposition(|s| s.role == super::sidebar::SectionRole::PrimaryView)
+            });
+            if let Some(index) = primary {
+                self.focus_sidebar_section(index);
+            } else {
+                self.take_focus_for_file_explorer();
+                self.set_status_message(t!("explorer.focused").to_string());
+                self.active_window_mut()
+                    .sync_file_explorer_to_active_file_with_feedback();
+            }
         } else {
             self.active_window_mut().key_context = KeyContext::Normal;
             self.set_status_message(t!("explorer.closed").to_string());

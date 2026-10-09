@@ -45,6 +45,7 @@ use super::msg::{UiFact, UiMsg};
 /// The column.
 #[derive(Clone, Debug)]
 pub struct Sidebar {
+    pub activity: Option<ActivityLayout>,
     /// Width in columns, already resolved against the frame.
     pub cols: u16,
     pub on_left: bool,
@@ -58,6 +59,15 @@ pub struct Sidebar {
     pub x0: u16,
     /// Top to bottom. Section 0 is the explorer.
     pub sections: Vec<Section>,
+}
+
+pub const ACTIVITY_COLS: u16 = 5;
+
+#[derive(Clone, Debug)]
+pub struct ActivityLayout {
+    pub index: usize,
+    /// Original section indices: widget routing must not be renumbered.
+    pub content: Vec<usize>,
 }
 
 /// One section of the column: its content, and the chrome it wears.
@@ -126,6 +136,7 @@ impl Sidebar {
     /// A column holding the explorer and nothing else.
     pub fn explorer_only(cols: u16, on_left: bool, e: Explorer) -> Sidebar {
         Sidebar {
+            activity: None,
             cols,
             on_left,
             grip_hovered: false,
@@ -148,9 +159,15 @@ impl Sidebar {
             .iter()
             .enumerate()
             .find_map(|(i, s)| match &s.kind {
-                SectionKind::Panel(p) if s.focused => Some((i, p)),
+                SectionKind::Panel(p) if s.focused && self.section_visible(i) => Some((i, p)),
                 _ => None,
             })
+    }
+
+    pub fn section_visible(&self, i: usize) -> bool {
+        self.activity
+            .as_ref()
+            .is_none_or(|a| a.index == i || a.content.contains(&i))
     }
 }
 
@@ -219,10 +236,19 @@ fn hover_msg(t: Option<HoverTarget>) -> fresh_ui::Handler<UiMsg> {
 /// The column as a description: the sections in a `col`, and the width grip
 /// in an overlay over all of them.
 pub fn sidebar(s: &Sidebar) -> Node<UiMsg> {
-    let last_open = s.sections.iter().rposition(|sec| !sec.collapsed);
+    let indices: Vec<usize> = match &s.activity {
+        Some(a) => a.content.clone(),
+        None => (0..s.sections.len()).collect(),
+    };
+    let last_open = indices.iter().copied().rfind(|&i| !s.sections[i].collapsed);
+    let mut content_sidebar = s.clone();
+    if s.activity.is_some() {
+        content_sidebar.cols = s.cols.saturating_sub(ACTIVITY_COLS);
+    }
     let mut column = col();
-    for (i, sec) in s.sections.iter().enumerate() {
-        let node = section(s, i, sec);
+    for &i in &indices {
+        let sec = &s.sections[i];
+        let node = section(&content_sidebar, i, sec);
         let node = if sec.collapsed {
             node.h(Sizing::Cells(1))
         } else if Some(i) == last_open {
@@ -236,9 +262,9 @@ pub fn sidebar(s: &Sidebar) -> Node<UiMsg> {
     }
     // The bottom border wears the last section's chrome — with one section,
     // the panel's own.
-    let bottom_theme = s
-        .sections
+    let bottom_theme = indices
         .last()
+        .and_then(|&i| s.sections.get(i))
         .map(|sec| sec.border_theme.clone())
         .unwrap_or_else(Explorer::panel);
     if last_open.is_none() {
@@ -251,7 +277,23 @@ pub fn sidebar(s: &Sidebar) -> Node<UiMsg> {
         );
     }
     column = column.child(border_line(bottom_theme, '└', '┘').h(Sizing::Cells(1)));
-    stack().children([column, overlay(s)])
+    if indices.is_empty() {
+        col().w(Sizing::Cells(0))
+    } else {
+        stack().children([column.flex(1), overlay(&content_sidebar)])
+    }
+}
+
+/// The 5-column navigation rail, placed at the frame's left edge.
+pub fn activity_rail(s: &Sidebar) -> Option<Node<UiMsg>> {
+    let a = s.activity.as_ref()?;
+    let rail = match s.sections.get(a.index).map(|sec| &sec.kind) {
+        Some(SectionKind::Panel(p)) => panel_body(a.index, p),
+        _ => col(),
+    }
+    .w(Sizing::Cells(ACTIVITY_COLS))
+    .theme(Explorer::panel());
+    Some(rail)
 }
 
 /// One section: its header row over its body, sized by the caller.
@@ -439,12 +481,20 @@ fn border_line(theme: String, l: char, r: char) -> Node<UiMsg> {
 /// union box: the chevron and the control appear only once a second section
 /// exists (§4.6).
 fn header_row(s: &Sidebar, i: usize, sec: &Section) -> Node<UiMsg> {
-    let (l, r) = if i == 0 {
+    let (l, r) = if i == 0
+        || s.activity
+            .as_ref()
+            .is_some_and(|a| a.content.first() == Some(&i))
+    {
         ('┌', '┐')
     } else {
         ('├', '┤')
     };
-    let several = s.sections.len() > 1;
+    let several = s
+        .activity
+        .as_ref()
+        .map_or(s.sections.len(), |a| a.content.len())
+        > 1;
     let mut cells: Vec<Node<UiMsg>> = vec![
         // One cell of border before the title, which is where ratatui's
         // `Block` starts a left-aligned title.
@@ -748,6 +798,7 @@ mod tests {
 
     fn two(cols: u16) -> Sidebar {
         Sidebar {
+            activity: None,
             cols,
             on_left: true,
             grip_hovered: false,
@@ -853,6 +904,7 @@ mod tests {
     fn one_section_wears_no_chevron() {
         let got = lines(
             Sidebar {
+                activity: None,
                 cols: 20,
                 on_left: true,
                 grip_hovered: false,
@@ -1018,6 +1070,7 @@ mod tests {
         sec.kind = SectionKind::Panel(interior);
         sec.focused = focused;
         Sidebar {
+            activity: None,
             cols: 20,
             on_left: true,
             grip_hovered: false,
@@ -1043,6 +1096,55 @@ mod tests {
             got[5]
         );
         assert_eq!(got[8], "└──────────────────┘");
+    }
+
+    #[test]
+    fn activity_rail_keeps_original_slots_and_gives_primary_view_full_height() {
+        let mut s = with_panel(false);
+        s.sections.push(s.sections[1].clone());
+        s.activity = Some(ActivityLayout {
+            index: 1,
+            content: vec![2],
+        });
+        let got = lines(s.clone(), 20, 9);
+        assert!(
+            got[0].contains("Outline"),
+            "primary view starts at the top: {got:?}"
+        );
+        assert!(!got.iter().any(|l| l.contains("Files") || l.contains("src")));
+        let ui = laid_out(s, 20, 9);
+        let rail_key = super::super::panel::interior_key(super::super::widgets::Slot::Sidebar(1));
+        let view_key = super::super::panel::interior_key(super::super::widgets::Slot::Sidebar(2));
+        let rail = ui.rect_of(ui.find_by_key(&rail_key).expect("rail slot"));
+        let view = ui.rect_of(ui.find_by_key(&view_key).expect("primary slot"));
+        assert_eq!(rail.w, ACTIVITY_COLS);
+        assert_eq!(rail.h, 9);
+        assert_eq!(view.x, i32::from(ACTIVITY_COLS + 1));
+        assert_eq!(view.w, 13);
+        assert!(
+            got[8].contains('└'),
+            "view border reaches the final row: {got:?}"
+        );
+    }
+
+    #[test]
+    fn hidden_activity_content_leaves_the_rail_and_returns_width_to_editor() {
+        let mut s = with_panel(false);
+        s.cols = ACTIVITY_COLS;
+        s.activity = Some(ActivityLayout {
+            index: 1,
+            content: vec![],
+        });
+        let ui = laid_out(s, 20, 9);
+        let body = ui.rect_of(
+            ui.find_by_key(&super::super::frame::region_key(
+                super::super::frame::HostRegion::Body,
+            ))
+            .expect("editor"),
+        );
+        assert_eq!(body.x, i32::from(ACTIVITY_COLS));
+        assert_eq!(body.w, 15);
+        assert!(ui.find_by_key(&explorer_header_key(0)).is_none());
     }
 
     /// The dock's keys layer, per section: a focused plugin section's

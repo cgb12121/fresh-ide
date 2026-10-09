@@ -2384,6 +2384,7 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
                 *disabled,
                 cx.marker_gutter,
                 *full_width,
+                key.is_some_and(|key| key.starts_with("act_view:")),
                 hover,
                 style.as_ref(),
                 &cx.surface,
@@ -4479,6 +4480,7 @@ fn button_node(
     disabled: bool,
     marker_gutter: bool,
     full_width: bool,
+    activity_tile: bool,
     declared_hover: Option<&OverlayOptions>,
     resting: Option<&OverlayOptions>,
     surface: &Ink,
@@ -4510,10 +4512,24 @@ fn button_node(
     // it to whatever the column settled on.
     let reserved = shell_style::cascade(&classes).reserved_x();
     let inner = fresh_ui::glyph::width(label);
+    let button_height = if activity_tile { 3 } else { 1 };
+    let button_content = if activity_tile {
+        col()
+            .h(Sizing::Cells(button_height))
+            .children([
+                text(" "),
+                text(label).elide(fresh_ui::desc::Elide::Tail),
+                text(" "),
+            ])
+    } else {
+        col()
+            .h(Sizing::Cells(1))
+            .child(text(label).elide(fresh_ui::desc::Elide::Tail))
+    };
     let boxed = col()
         .classes(&classes)
         .theme(name.clone())
-        .h(Sizing::Cells(1))
+        .h(Sizing::Cells(button_height))
         .w(match full_width {
             true => Sizing::Auto,
             false => Sizing::Cells(inner.saturating_add(reserved.saturating_mul(2))),
@@ -4524,7 +4540,7 @@ fn button_node(
         // keeps the head and marks the cut, which is what a label wants (the
         // padding helper's `…` did the same by hand, at a width it had to be
         // told).
-        .child(text(label).elide(fresh_ui::desc::Elide::Tail));
+        .child(button_content);
 
     // `bare` never took the gutter: the marker exists to give a *word* the
     // shape of a focused control, and a glyph affordance already has one.

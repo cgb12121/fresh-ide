@@ -264,7 +264,7 @@ impl Editor {
         // pane and the chrome is announced (`app::focus_announcer`).
         self.announce_chrome_focus();
 
-        // Carve a full-height left column for a docked floating panel
+        // Carve a right-side column for a docked floating panel
         // (e.g. the orchestrator dock) out of the screen *before* the
         // chrome lays itself out, so the menu bar, splits, and status
         // bar all sit to the dock's right. `chrome_area` is the region
@@ -3070,16 +3070,21 @@ impl Editor {
         height: u16,
     ) -> Option<crate::view::shell::sidebar::Sidebar> {
         use crate::view::shell::sidebar::{Section, SectionKind, Sidebar};
-        let should_show = self.file_explorer_visible()
-            && (self.file_explorer().is_some()
-                || self.active_window().file_explorer_sync_in_progress);
+        let activity_index = self.activity_bar_index();
+        let should_show = activity_index.is_some()
+            || (self.file_explorer_visible()
+                && (self.file_explorer().is_some()
+                    || self.active_window().file_explorer_sync_in_progress));
         if !should_show {
             return None;
         }
-        let cols = self
-            .active_window()
-            .file_explorer_width
-            .to_cols(chrome_area.width);
+        let cols = if activity_index.is_some() && !self.file_explorer_visible() {
+            crate::view::shell::sidebar::ACTIVITY_COLS
+        } else {
+            self.active_window()
+                .file_explorer_width
+                .to_cols(chrome_area.width)
+        };
         let on_left = matches!(
             self.active_window().file_explorer_side,
             FileExplorerSide::Left
@@ -3159,6 +3164,10 @@ impl Editor {
             sections.push(section);
         }
         Some(Sidebar {
+            activity: activity_index.map(|index| crate::view::shell::sidebar::ActivityLayout {
+                index,
+                content: self.sidebar_content_indices(),
+            }),
             cols,
             on_left,
             grip_hovered,
@@ -5447,14 +5456,25 @@ impl Editor {
     /// caret at the focused TextInput. Stores the inner rect on the
     /// `FloatingWidgetState` so the click hit-test can recover the
     /// geometry on the next mouse event.
-    /// Split `size` into an optional full-height left dock column and
+    /// Split `size` into an optional right dock column and
     /// the remaining chrome area. Returns `(None, size)` unless a
-    /// floating panel is currently placed as a `LeftDock`. The dock
+    /// floating panel is currently placed as a `RightDock`. The dock
     /// width is clamped so it can never crowd out the chrome.
     pub(super) fn compute_dock_split(
         &self,
         size: ratatui::layout::Rect,
     ) -> (Option<ratatui::layout::Rect>, ratatui::layout::Rect) {
+        let activity_offset = if self.activity_bar_index().is_some() {
+            crate::view::shell::sidebar::ACTIVITY_COLS
+        } else {
+            0
+        };
+        let avail_size = ratatui::layout::Rect {
+            x: size.x.saturating_add(activity_offset),
+            y: size.y,
+            width: size.width.saturating_sub(activity_offset),
+            height: size.height,
+        };
         // The editor is the priority: it keeps `EDITOR_MIN` columns, the dock
         // honors its drag-set width below that, and once the terminal is too
         // narrow for a worthwhile dock alongside the editor the dock hides
@@ -5472,23 +5492,26 @@ impl Editor {
         let slot_open = self
             .dock
             .as_ref()
-            .is_some_and(|f| matches!(f.placement, super::PanelPlacement::LeftDock))
+            .is_some_and(|f| matches!(f.placement, super::PanelPlacement::RightDock))
             || self.dock_slot_reserved();
-        let requested = slot_open.then(|| self.requested_dock_width(size.width));
-        let Some(width) = crate::view::shell::frame::dock_width(requested, size.width) else {
-            return (None, size);
+        let requested = slot_open.then(|| self.requested_dock_width(avail_size.width));
+        let Some(width) = crate::view::shell::frame::dock_width(requested, avail_size.width) else {
+            return (None, avail_size);
         };
+        let menu_rows = u16::from(self.active_window().menu_bar_visible);
+        let content_y = avail_size.y.saturating_add(menu_rows);
+        let content_height = avail_size.height.saturating_sub(menu_rows);
         let dock = ratatui::layout::Rect {
-            x: size.x,
-            y: size.y,
+            x: avail_size.x.saturating_add(avail_size.width.saturating_sub(width)),
+            y: content_y,
             width,
-            height: size.height,
+            height: content_height,
         };
         let chrome = ratatui::layout::Rect {
-            x: size.x.saturating_add(width),
-            y: size.y,
-            width: size.width.saturating_sub(width),
-            height: size.height,
+            x: avail_size.x,
+            y: avail_size.y,
+            width: avail_size.width.saturating_sub(width),
+            height: avail_size.height,
         };
         (Some(dock), chrome)
     }
@@ -5906,7 +5929,7 @@ impl Editor {
             // it, and is gone otherwise — see `widgets::Ctx::scrollbar_reveal`
             // for why that is a fact handed down rather than a rule the tree
             // could apply itself.
-            scrollbar_reveal: matches!(panel.placement, super::PanelPlacement::LeftDock).then(
+            scrollbar_reveal: matches!(panel.placement, super::PanelPlacement::RightDock).then(
                 || {
                     panel.scrollbar_zone_hovered
                         || panel
@@ -5948,7 +5971,7 @@ impl Editor {
             super::PanelPlacement::Anchored { x, y } => Spot::Anchored { x, y },
             // The dock panel's frame is the dock column's, not this box's —
             // and a sidebar section's is its column's.
-            super::PanelPlacement::LeftDock | super::PanelPlacement::SidebarSection { .. } => {
+            super::PanelPlacement::RightDock | super::PanelPlacement::SidebarSection { .. } => {
                 return None
             }
         };

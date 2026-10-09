@@ -517,8 +517,19 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
     // the region key, so every caller that asks for `HostRegion::Explorer`'s
     // rectangle still gets one — the whole column, of which the explorer is
     // the first section.
+    let sidebar_cols = |s: &super::sidebar::Sidebar| {
+        if s.activity.is_some() {
+            if s.activity.as_ref().map(|a| a.content.is_empty()).unwrap_or(false) {
+                0
+            } else {
+                s.cols.saturating_sub(super::sidebar::ACTIVITY_COLS)
+            }
+        } else {
+            s.cols
+        }
+    };
     let sidebar = |s: &super::sidebar::Sidebar| {
-        named(HostRegion::Explorer, super::sidebar::sidebar(s)).w(Sizing::Cells(s.cols))
+        named(HostRegion::Explorer, super::sidebar::sidebar(s)).w(Sizing::Cells(sidebar_cols(s)))
     };
     // The body: the grid. Every pane's content and bars are leaves of its
     // own (see `splits::live_pane`), and the dividers between the panes draw
@@ -555,15 +566,14 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
             region(HostRegion::Explorer).w(Sizing::Cells(0)),
         ]),
     };
+    // The menu bar spans the entire terminal. It is a true top row above the
+    // activity rail, editor, and side panels, as in a conventional IDE.
+    let menu_bar = named(
+        HostRegion::MenuBar,
+        super::menu::menu_bar(&f.menu_bar_items),
+    )
+    .h(cells(f.menu_bar));
     let chrome = col().flex(1).key(chrome_key()).children([
-        // Native: the bar's own row. It keeps the region key so every caller
-        // that asks for `HostRegion::MenuBar`'s rectangle still gets one — a
-        // region that has gone native is still a region.
-        named(
-            HostRegion::MenuBar,
-            super::menu::menu_bar(&f.menu_bar_items),
-        )
-        .h(cells(f.menu_bar)),
         // **Everything under the bar, as one region**: the room a menu
         // dropdown may occupy (`menu::dropdown` names it as `within`), so a
         // long menu is measured against it and clamped inside it rather
@@ -660,7 +670,7 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
         s.sections
             .iter()
             .enumerate()
-            .find(|(_, sec)| super::sidebar::header_holds_keyboard(sec))
+            .find(|(i, sec)| s.section_visible(*i) && super::sidebar::header_holds_keyboard(sec))
     }) {
         Some((i, sec)) => chrome.child(super::sidebar::keys_layer(sec, i)),
         None => chrome,
@@ -767,7 +777,16 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
     // and it is meant to survive a workspace switch. Inside the window key its
     // element state would follow whichever window is active, and its sessions
     // list would lose its scroll on every switch.
-    let frame = row().children([
+    let rail_node = match &f.sidebar {
+        Some(s) if s.activity.is_some() => super::sidebar::activity_rail(s),
+        _ => None,
+    };
+    let content = row().flex(1).children([
+        match rail_node {
+            Some(r) => r,
+            None => row().w(Sizing::Cells(0)),
+        },
+        window_area,
         match f.dock {
             Some(w) => named(
                 HostRegion::Dock,
@@ -781,8 +800,8 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
             .w(Sizing::Cells(w)),
             None => region(HostRegion::Dock).w(Sizing::Cells(0)),
         },
-        window_area,
     ]);
+    let frame = col().flex(1).children([menu_bar, content]);
     // From here down: editor-scoped, like the dock. Each covers or dims the
     // *whole* frame, each is state on the `Editor` rather than on a `Window`,
     // and none of them should be discarded because the active workspace

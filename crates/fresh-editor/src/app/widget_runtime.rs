@@ -2660,7 +2660,7 @@ impl Editor {
         }
         let panel = self.panel(slot)?;
         let h = match panel.placement {
-            super::PanelPlacement::LeftDock => term_h,
+            super::PanelPlacement::RightDock => term_h,
             _ => {
                 let pct = panel.height_pct.clamp(1, 100) as u32;
                 (term_h * pct) / 100
@@ -3262,7 +3262,7 @@ mod tests {
             panel_key,
             width_pct: 30,
             height_pct: 100,
-            placement: crate::app::PanelPlacement::LeftDock,
+            placement: crate::app::PanelPlacement::RightDock,
             focused: true,
             mode: None,
             scrollbar_zone_hovered: false,

@@ -1558,9 +1558,9 @@ pub struct Editor {
     /// `Editor::panel_keyboard_changed`.
     pub(crate) dock_covered: bool,
 
-    /// The editor-global left **dock** panel (`PanelSlot::Dock`), if
+    /// The editor-global right **dock** panel (`PanelSlot::Dock`), if
     /// shown. Independent of `floating_widget_panel` so the dock persists
-    /// while a centered modal is open. Always rendered as a `LeftDock`.
+    /// while a centered modal is open. Always rendered as a `RightDock`.
     pub(crate) dock: Option<FloatingWidgetState>,
 
     /// The dock's column is held open for a panel that has not arrived yet.
@@ -1691,13 +1691,13 @@ pub(crate) enum PanelPlacement {
     /// Centered modal overlay sized by `width_pct`/`height_pct`
     /// (the historical default; dims the background, captures keys).
     Centered,
-    /// Full-height column pinned to the left of the entire editor
-    /// chrome (left of the menu bar, splits, and status bar). The
+    /// Full-height column pinned to the right of the editor body,
+    /// below the full-width menu bar. The
     /// chrome is laid out in the remaining width; no background
     /// dimming. Non-modal — see `FloatingWidgetState::focused`.
     /// The column's width is the editor's (`Editor::dock_width`), not the
     /// panel's.
-    LeftDock,
+    RightDock,
     /// Content-sized popup anchored near a screen cell — a right-click
     /// context menu. Drawn at `(x, y)` (clamped to stay fully on
     /// screen), sized to its rendered content, with **no** background
@@ -1722,7 +1722,7 @@ pub(crate) struct FloatingWidgetState {
     /// re-anchors to a dock via `FloatingPanelControl{op:"dock"}`.
     pub placement: PanelPlacement,
     /// Whether keys route to this panel. Always true for `Centered`
-    /// (modal). For `LeftDock` a plugin toggles this via
+    /// (modal). For `RightDock` a plugin toggles this via
     /// `FloatingPanelControl{op:"focus"|"blur"}` so the editor
     /// underneath stays keyboard-usable while the dock is visible.
     pub focused: bool,
@@ -1789,7 +1789,7 @@ pub(crate) struct FloatingWidgetState {
     /// "fullscreen"}`. Lets the orchestrator's global modals (the control
     /// room, the New-Session form) take the full screen over their own
     /// dock, while other plugins' floating panels keep the default
-    /// coexist-beside-the-dock layout. Ignored for `LeftDock`.
+    /// coexist-beside-the-dock layout. Ignored for `RightDock`.
     pub fullscreen: bool,
     /// When true, every focusable control of this panel reserves a
     /// two-column gutter for the
@@ -2363,7 +2363,7 @@ mod tests {
 
         let mut editor = default_test_editor();
         editor.active_window_mut().key_context = KeyContext::Terminal;
-        editor.dock = Some(test_panel(PanelPlacement::LeftDock, true));
+        editor.dock = Some(test_panel(PanelPlacement::RightDock, true));
         frame_the_shell(&mut editor);
         assert_eq!(editor.get_key_context(), KeyContext::Dock);
         assert!(!pty_open(&editor), "the dock holds the keyboard");
@@ -2385,7 +2385,7 @@ mod tests {
 
         let mut editor = default_test_editor();
         editor.active_window_mut().key_context = KeyContext::Terminal;
-        editor.dock = Some(test_panel(PanelPlacement::LeftDock, true));
+        editor.dock = Some(test_panel(PanelPlacement::RightDock, true));
         editor.floating_widget_panel = Some(test_panel(PanelPlacement::Centered, true));
         frame_the_shell(&mut editor);
         assert_eq!(editor.get_key_context(), KeyContext::Normal);
@@ -2409,7 +2409,7 @@ mod tests {
         use fresh_core::api::PluginCommand;
 
         let mut editor = default_test_editor();
-        editor.dock = Some(test_panel(PanelPlacement::LeftDock, true));
+        editor.dock = Some(test_panel(PanelPlacement::RightDock, true));
         // Drop any redraw request left over from construction.
         let _ = editor.take_full_redraw_request();
 

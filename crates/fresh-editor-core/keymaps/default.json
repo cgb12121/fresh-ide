@@ -2,6 +2,35 @@
   "inherits": null,
   "bindings": [
     {
+      "comment": "Workbench views (terminals must report Shift separately)",
+      "key": "e",
+      "modifiers": ["ctrl", "shift"],
+      "action": "workbench_view_explorer",
+      "args": {},
+      "when": "global"
+    },
+    {
+      "key": "g",
+      "modifiers": ["ctrl", "shift"],
+      "action": "workbench_view_scm",
+      "args": {},
+      "when": "global"
+    },
+    {
+      "key": "x",
+      "modifiers": ["ctrl", "shift"],
+      "action": "workbench_view_extensions",
+      "args": {},
+      "when": "global"
+    },
+    {
+      "key": "a",
+      "modifiers": ["ctrl", "shift"],
+      "action": "workbench_view_agents",
+      "args": {},
+      "when": "global"
+    },
+    {
       "comment": "Quick Open - files, commands (>), buffers (#), go to line (:)",
       "key": "p",
       "modifiers": ["ctrl"],

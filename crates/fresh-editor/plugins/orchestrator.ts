@@ -874,7 +874,7 @@ let openPanel: FloatingWidgetPanel | null = null;
 // non-null, `openPanel` is the picker and this is the dock underneath;
 // closing the picker hands control back to it (`restoreDockBehindPicker`)
 // rather than tearing everything down. The host renders both slots, so
-// the dock stays visible (dimmed + passive) in its left column beside
+// the dock stays visible (dimmed + passive) in its right column beside
 // the picker.
 let dockPanel: FloatingWidgetPanel | null = null;
 // When the open panel is mounted as the persistent left dock rather
@@ -5573,7 +5573,7 @@ function openControlRoom(
     // mounted in its own host slot (PanelSlot::Dock) and build the picker
     // as a fresh panel in the Floating slot, exactly as the New-Session
     // form coexists with the dock. The host renders both slots, so the
-    // dock stays put in its left column — dimmed and passive — and the
+    // dock stays put in its right column — dimmed and passive — and the
     // picker lays into `chrome_area` beside it. Closing the picker hands
     // control back to the dock (`restoreDockBehindPicker`). An `asDock`
     // re-entry (Toggle Dock) never reaches here — `toggleDock` handles it
@@ -5647,12 +5647,12 @@ function openControlRoom(
   const activeIdx = openDialog.filteredIds.indexOf(activeId);
   openDialog.selectedIndex = activeIdx >= 0 ? activeIdx : 0;
   if (asDock) {
-    // Persistent, non-modal full-height left column. Mount, then
+    // Persistent, non-modal right column. Mount, then
     // re-anchor to the dock (which sets the content-wrap width to the
     // dock columns) and re-render so the spec lays out at dock width.
     // Mount straight into the host's dedicated dock slot so it
     // coexists with a centered modal (the New-Session form) instead
-    // of being replaced by it. `asDock` carves the left column and
+    // of being replaced by it. `asDock` carves the right column and
     // wraps the content to the dock width.
     openPanel.mount(buildDockSpec(), {
       widthPct: 100,
@@ -5754,19 +5754,30 @@ function closeOpenDialog(): void {
   // than dropping to the bare editor. (It re-publishes its own cycle order
   // on the next refresh, so leave the override in place here.)
   if (restoreDockBehindPicker()) return;
+  const wasDock = dockMode;
   openDialog = null;
   dockMode = false;
   dockBlurred = false;
   // The dock is gone — restore the default Next/Prev Window cycling (every
   // window, by id).
   editor.setWindowCycleOrder([]);
+  if (wasDock) {
+    try {
+      const reg = editor.getPluginApi("workbench-views") as { getActiveViewId?: () => string; clearActiveView?: () => void } | null;
+      if (reg?.getActiveViewId?.() === "agents") {
+        reg.clearActiveView?.();
+      }
+    } catch {
+      // Ignore if workbench-views is not loaded
+    }
+  }
 }
 
 // ---------------------------------------------------------------------
 // Global left dock
 //
 // The dock reuses the open-dialog state/panel but is mounted as a
-// full-height, non-modal left column (host `floatingPanelControl`
+// full-height, non-modal right column (host `floatingPanelControl`
 // "dock"). It renders a single-column session list (the modal's
 // two-pane picker would be unreadable at dock width). Navigating the
 // list switches the active window live (debounced), so the editor to
@@ -17185,6 +17196,17 @@ editor.exportPluginApi("orchestrator", {
   unarchiveWorkspace: apiUnarchiveWorkspace,
   setDockView: apiSetDockView,
   setDockFilter: apiSetDockFilter,
+  isDockOpen: () => !!(openPanel && dockMode),
+  closeDock: () => {
+    if (openPanel && dockMode) {
+      closeOpenDialog();
+    }
+  },
+  openDock: () => {
+    if (!openPanel || !dockMode) {
+      openControlRoom({ dock: true });
+    }
+  },
 });
 
 // Form key bindings. The focused control answers a key first — a field
@@ -18538,7 +18560,7 @@ editor.on("widget_event", (e) => {
     if (e.event_type === "cancel") {
       // Esc / native `[×]` unmounted the picker panel — sync our own
       // state. This teardown is for the centered MODAL picker only: the
-      // dock (LeftDock placement) never fires `cancel` (its Esc blurs to
+      // dock (RightDock placement) never fires `cancel` (its Esc blurs to
       // the editor, host-side), and the modal always runs with
       // `dockMode === false` — even when floated over a live dock, where
       // the dock is parked in `dockPanel`. Guard on `dockMode` so a stray
@@ -19072,3 +19094,12 @@ editor.addMenuItem({
   checkbox: "dock",
   after: "toggle_file_explorer",
 });
+
+// Copilot-style entry at the far left of the menu bar. It routes to the same
+// Agent/Chat dock exposed by the Activity Bar.
+editor.addTopLevelActionMenu(
+  "Chat",
+  "◉ Chat",
+  "orchestrator_dock_toggle",
+  "File",
+);

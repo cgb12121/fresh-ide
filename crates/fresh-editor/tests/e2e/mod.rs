@@ -354,6 +354,7 @@ pub mod shift_backspace;
 pub mod sidebar_focus_cycle;
 #[cfg(feature = "plugins")]
 pub mod sidebar_sections;
+pub mod workbench_views;
 #[cfg(feature = "plugins")]
 pub mod sidebar_window_scope;
 pub mod slow_filesystem;

@@ -2868,6 +2868,10 @@ async function open_theme_editor() : Promise<void> {
 }
 registerHandler("open_theme_editor", open_theme_editor);
 
+// Let the Extensions view open this editor without depending on localized
+// command labels or duplicating the theme selection flow.
+editor.exportPluginApi("theme_editor", { open: open_theme_editor });
+
 /**
  * Actually open the theme editor with loaded theme data
  */

@@ -1135,7 +1135,18 @@ impl Editor {
                 }
             }
             Action::ResetBufferSettings => self.reset_buffer_settings(),
-            Action::FocusFileExplorer => self.focus_file_explorer(),
+            Action::FocusFileExplorer => {
+                if self.activity_bar_index().is_some()
+                    && self
+                        .sidebar_sections
+                        .iter()
+                        .any(|s| s.role == sidebar::SectionRole::PrimaryView)
+                {
+                    self.handle_action(Action::PluginAction("workbench_view_explorer".into()))?;
+                } else {
+                    self.focus_file_explorer();
+                }
+            }
             Action::FocusEditor => self.active_window_mut().focus_editor(),
             Action::FocusNextSidebarSection => self.focus_next_sidebar_section(),
             Action::FocusPrevSidebarSection => self.focus_prev_sidebar_section(),

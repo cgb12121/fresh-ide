@@ -6100,7 +6100,7 @@ impl Editor {
         // A dock's width is the editor's (`dock_width` / `dock_width_rule`),
         // not the panel's.
         let placement = if as_dock {
-            super::PanelPlacement::LeftDock
+            super::PanelPlacement::RightDock
         } else {
             super::PanelPlacement::Centered
         };
@@ -6410,6 +6410,34 @@ impl Editor {
             self.blur_floating_panel(slot);
             return;
         }
+        if let super::PanelSlot::Sidebar(i) = slot {
+            use crate::app::sidebar::SectionRole;
+            match op {
+                "activity_bar" => {
+                    self.sidebar_sections[i].role = SectionRole::ActivityBar;
+                    self.relayout();
+                    return;
+                }
+                "sidebar_view" => {
+                    self.sidebar_sections[i].role = SectionRole::PrimaryView;
+                    self.sidebar_sections[i].collapsed = false;
+                    self.reveal_sidebar();
+                    return;
+                }
+                "activity_show" => {
+                    if self.sidebar_sections[i].role != SectionRole::ActivityBar {
+                        return;
+                    }
+                    let visible = self.file_explorer_visible();
+                    if arg < 0.0 || visible != (arg > 0.0) {
+                        self.blur_sidebar_panels();
+                        self.toggle_file_explorer();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         // `dock_width` sets the editor's dock width, not the panel's, so it
         // is answered before the panel is borrowed. It sticks like a drag:
         // across resizes and launches, until the next one.
@@ -6517,7 +6545,7 @@ impl Editor {
         let geometry_changed = match op {
             // `arg` is ignored: the width is the editor's; see `dock_width`.
             "dock" => {
-                fwp.placement = super::PanelPlacement::LeftDock;
+                fwp.placement = super::PanelPlacement::RightDock;
                 fwp.focused = true;
                 true
             }
