@@ -83,16 +83,32 @@ pub struct Strip {
     pub reveal: Option<Rc<fresh_ui::behavior::Anchor>>,
     /// The word a preview tab carries after its name, localized.
     pub preview_label: String,
+    /// How wide a name may get, in columns, from `editor.tab_name_max_cols`.
+    /// `0` means no ceiling at all.
+    ///
+    /// Carried here rather than read from the config at layout time because
+    /// `name_cap` is answered inside a `layout_reader`, which is handed the
+    /// frame and nothing else.
+    pub max_name_cols: usize,
 }
 
 impl Strip {
     /// The cap to build this strip's labels with, in a window `room` cells
-    /// wide: `TAB_NAME_MAX_COLS` when the names do not fit, and no cap at all
-    /// when they do.
+    /// wide.
+    ///
+    /// Two ceilings, and the tighter one wins: what the user asked for, and
+    /// `TAB_NAME_MAX_COLS`, which only bites once the names overflow. Before
+    /// the configured ceiling a strip of one or two tabs showed its names
+    /// whole however long they were — a single tab then filled the bar, which
+    /// is the case where a limit matters most.
     fn name_cap(&self, room: u16) -> usize {
+        let configured = match self.max_name_cols {
+            0 => usize::MAX,
+            n => n,
+        };
         match natural_width(&self.tabs, &self.preview_label) > usize::from(room) {
-            true => TAB_NAME_MAX_COLS,
-            false => usize::MAX,
+            true => configured.min(TAB_NAME_MAX_COLS),
+            false => configured,
         }
     }
 }
@@ -655,6 +671,7 @@ mod tests {
             hover_plus: false,
             reveal: None,
             preview_label: "(preview)".into(),
+            max_name_cols: 0,
         }
     }
 

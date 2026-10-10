@@ -160,6 +160,7 @@ pub struct PartialEditorConfig {
     pub virtual_space: Option<crate::config::VirtualSpaceMode>,
     pub animations: Option<bool>,
     pub tab_switch_animation: Option<bool>,
+    pub tab_name_max_cols: Option<usize>,
     pub cursor_jump_animation: Option<bool>,
     pub viewport_edge_fade: Option<bool>,
     pub line_numbers: Option<bool>,
@@ -257,6 +258,8 @@ impl Merge for PartialEditorConfig {
         self.animations.merge_from(&other.animations);
         self.tab_switch_animation
             .merge_from(&other.tab_switch_animation);
+        self.tab_name_max_cols
+            .merge_from(&other.tab_name_max_cols);
         self.cursor_jump_animation
             .merge_from(&other.cursor_jump_animation);
         self.viewport_edge_fade
@@ -674,6 +677,7 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             virtual_space: Some(cfg.virtual_space),
             animations: Some(cfg.animations),
             tab_switch_animation: Some(cfg.tab_switch_animation),
+            tab_name_max_cols: Some(cfg.tab_name_max_cols),
             cursor_jump_animation: Some(cfg.cursor_jump_animation),
             viewport_edge_fade: Some(cfg.viewport_edge_fade),
             line_numbers: Some(cfg.line_numbers),
@@ -782,6 +786,9 @@ impl PartialEditorConfig {
             tab_switch_animation: self
                 .tab_switch_animation
                 .unwrap_or(defaults.tab_switch_animation),
+            tab_name_max_cols: self
+                .tab_name_max_cols
+                .unwrap_or(defaults.tab_name_max_cols),
             cursor_jump_animation: self
                 .cursor_jump_animation
                 .unwrap_or(defaults.cursor_jump_animation),

@@ -1135,6 +1135,15 @@ pub struct EditorConfig {
     #[schemars(extend("x-section" = "Display"))]
     pub tab_switch_animation: bool,
 
+    /// Ceiling on a tab name's width, in columns. `0` removes the ceiling.
+    ///
+    /// Names were only elided once the strip overflowed, so a pane holding one
+    /// or two tabs showed them whole — and one long name then took the whole
+    /// bar. This caps them always. Default 25.
+    #[serde(default = "default_tab_name_max_cols")]
+    #[schemars(extend("x-section" = "Display"))]
+    pub tab_name_max_cols: usize,
+
     /// Fade out the top and bottom two rows of each pane when there is more
     /// text beyond that edge. The edge the cursor is on is never faded.
     #[serde(default = "default_true")]
@@ -1746,6 +1755,10 @@ fn default_mouse_wheel_scroll_lines() -> usize {
     3
 }
 
+fn default_tab_name_max_cols() -> usize {
+    25
+}
+
 fn default_mouse_hover_enabled() -> bool {
     !cfg!(windows)
 }
@@ -1777,6 +1790,7 @@ impl Default for EditorConfig {
             virtual_space: VirtualSpaceMode::default(),
             animations: true,
             tab_switch_animation: true,
+            tab_name_max_cols: 25,
             cursor_jump_animation: true,
             viewport_edge_fade: true,
             line_numbers: true,

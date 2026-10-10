@@ -953,6 +953,7 @@ mod tests {
             hover_plus: false,
             reveal: None,
             preview_label: String::new(),
+            max_name_cols: 0,
         };
         let s = Splits {
             root: root.clone(),
