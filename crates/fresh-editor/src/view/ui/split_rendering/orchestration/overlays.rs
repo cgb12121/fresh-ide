@@ -294,7 +294,7 @@ pub(crate) fn decoration_context(
     let query_ms = t_query.elapsed();
     let overlays_ms = t_overlays.elapsed();
     let all_ms = t_all.elapsed();
-    if all_ms >= std::time::Duration::from_millis(8) {
+    if all_ms >= std::time::Duration::from_millis(8) && crate::app::render::render_trace_enabled() {
         tracing::info!(
             target: "paste_timing",
             "deco_parts: total={}ms syntax={}ms overlays={}ms query={}ms rest={}ms",

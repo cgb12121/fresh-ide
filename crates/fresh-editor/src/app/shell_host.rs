@@ -608,7 +608,9 @@ pub fn content_body(
     // editor logs nothing. A pass that formats every visible line should not
     // cost tens of milliseconds; without this split there is no way to tell
     // the formatting from the write-back.
-    if t_settle.duration_since(t_sets) >= std::time::Duration::from_millis(8) {
+    if t_settle.duration_since(t_sets) >= std::time::Duration::from_millis(8)
+            && crate::app::render::render_trace_enabled()
+        {
         tracing::info!(
             target: "paste_timing",
             "content_parts: pane_sets={}ms pass={}ms settle={}ms",

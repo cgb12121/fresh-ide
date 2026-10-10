@@ -6781,7 +6781,21 @@ where
             // is code in this crate, the other is the Windows console.
             let mut core = std::time::Duration::ZERO;
             {
-                let _span = tracing::info_span!("terminal_draw").entered();
+                // **The span and the line below are a measurement, so they are
+                // behind `FRESH_RENDER_TRACE`.** The span is entered on every
+                // frame whatever it costs and the line is written on every
+                // frame at all, which is the price of knowing — not a price
+                // worth paying in the editor people use.
+                use tracing::Span;
+                let trace = fresh::app::render::render_trace_enabled();
+                // An unattached span records nothing and costs nothing; that
+                // is what "off" means here, rather than a second code path
+                // around the draw.
+                let _span = if trace {
+                    tracing::info_span!("terminal_draw").entered()
+                } else {
+                    Span::none().entered()
+                };
                 use crossterm::ExecutableCommand;
                 stdout().execute(crossterm::terminal::BeginSynchronizedUpdate)?;
                 terminal.draw(|frame| {
@@ -6790,13 +6804,16 @@ where
                     core += t.elapsed();
                 })?;
                 stdout().execute(crossterm::terminal::EndSynchronizedUpdate)?;
+                drop(_span);
+                if trace {
+                    let total = r0.elapsed();
+                    tracing::info!(target: "paste_timing", "render: {}ms (core={}ms io={}ms paste_pending={})",
+                        total.as_millis(),
+                        core.as_millis(),
+                        total.saturating_sub(core).as_millis(),
+                        was_paste_pending);
+                }
             }
-            let total = r0.elapsed();
-            tracing::info!(target: "paste_timing", "render: {}ms (core={}ms io={}ms paste_pending={})",
-                total.as_millis(),
-                core.as_millis(),
-                total.saturating_sub(core).as_millis(),
-                was_paste_pending);
             last_render = Instant::now();
             needs_render = false;
         }

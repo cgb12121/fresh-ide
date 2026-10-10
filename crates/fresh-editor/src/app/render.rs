@@ -223,6 +223,25 @@ impl crate::view::shell::fold::ProvenanceSink for FoldProvenance {
     }
 }
 
+/// Whether the render-phase diagnostics are switched on at all.
+///
+/// They cost a `tracing::info!` per slow frame, and in the one place that
+/// splits the terminal draw a span per frame whatever its cost. That is the
+/// right price for a measurement someone asked for and the wrong price for
+/// one shipping: an editor that logs a line for every frame it renders has
+/// a log that is the noise instead of the signal.
+///
+/// `FRESH_RENDER_TRACE=1` turns them on. Off by default, so the code they
+/// measure is the code that ships.
+pub fn render_trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("FRESH_RENDER_TRACE")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    })
+}
+
 impl Editor {
     /// Ask for another frame because plugin work was deferred out of this one.
     /// The drawing itself never blocks on the plugin lock — every hook site
@@ -1250,9 +1269,11 @@ impl Editor {
         self.mark_plugin_snapshot_dirty();
 
         // Where the frame went. Only slow frames are reported, so an idle
-        // editor logs nothing and a log full of these is a real signal.
+        // editor logs nothing and a log full of these is a real signal —
+        // and only when the trace is asked for at all, because this and its
+        // three sibling logs are a measurement, not a feature.
         let total = t_render.elapsed();
-        if total >= std::time::Duration::from_millis(12) {
+        if total >= std::time::Duration::from_millis(12) && render_trace_enabled() {
             tracing::info!(
                 target: "paste_timing",
                 "render_phases: total={}ms pre={}ms layout={}ms reconcile={}ms content={}ms prepaint={}ms paint={}ms post={}ms (hooks={}ms)",

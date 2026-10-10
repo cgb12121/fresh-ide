@@ -529,7 +529,7 @@ pub(crate) fn compute_buffer_layout(
     // split here "slow" only said that. Reported whole (not per part) so a slow
     // layout is attributable without a log line per frame.
     let total_elapsed = t_total.elapsed();
-    if total_elapsed >= std::time::Duration::from_millis(8) {
+    if total_elapsed >= std::time::Duration::from_millis(8) && crate::app::render::render_trace_enabled() {
         tracing::info!(
             target: "paste_timing",
             "layout_parts: total={}ms view_data={}ms deco={}ms render_lines={}ms clone={}ms rest={}ms",
