@@ -1390,9 +1390,44 @@ function extractTextFromTokens(tokens: ViewTokenWire[]): string {
 /**
  * Convert a char offset within lineContent to a buffer byte offset.
  * Handles UTF-8 multi-byte characters correctly.
+ *
+ * **A markdown row is ASCII almost always, and for ASCII the byte offset and
+ * the char offset are the same number.** Taking that case first turns this
+ * from a slice plus a trip through the QuickJS→host boundary into an
+ * arithmetic add — and that boundary was the cost: a table row asks about
+ * one offset per pipe and one per separator dash, so a wide separator row
+ * paid for a host round-trip dozens of times just to draw its own frame.
+ *
+ * The test is memoized on the last line answered, because a caller working
+ * through one line asks about that line over and over; string identity makes
+ * the guard O(1) in the common case.
  */
+let lastAsciiLine: string | null = null;
+let lastLineWasAscii = true;
+
 function charToByte(lineContent: string, charOffset: number, lineByteStart: number): number {
+  if (lineContent !== lastAsciiLine) {
+    lastAsciiLine = lineContent;
+    lastLineWasAscii = !/[^\x00-\x7F]/.test(lineContent);
+  }
+  if (lastLineWasAscii) {
+    return lineByteStart + charOffset;
+  }
   return lineByteStart + editor.utf8ByteLength(lineContent.slice(0, charOffset));
+}
+
+/**
+ * How many `|` a row has, without building the array `split` would.
+ *
+ * `split` allocates one string per pipe and an array on top; this is a
+ * counter over the same characters.
+ */
+function countPipes(line: string): number {
+  let n = 0;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '|') n++;
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -1995,6 +2030,17 @@ function processLineConceals(
           }
         }
       }
+      // **The same ranges, flattened into one flag per character.** The pass
+      // below visits a cell's characters one at a time, and answering "is
+      // this one inside a truncated cell" by walking the range list again
+      // made that O(chars × cells). The flag is filled from the same ranges,
+      // so it says the same thing; it is just asked once per character
+      // instead of once per character per range.
+      const truncatedChars = new Uint8Array(lineContent.length);
+      for (const r of truncatedCellCharRanges) {
+        const end = Math.min(r.end, lineContent.length);
+        for (let k = Math.max(0, r.start); k < end; k++) truncatedChars[k] = 1;
+      }
 
       // A data cell's surrounding spaces are alignment, not content.
       //
@@ -2051,6 +2097,15 @@ function processLineConceals(
 
       // Track which pipe index we're on (0 = leading pipe)
       let pipeIdx = 0;
+      // **How many pipes the row has, counted once.** This used to be
+      // recomputed per pipe as `lineContent.split('|').length - 1` — and its
+      // companion, the pipe's own position, as
+      // `lineContent.substring(0, i + 1).split('|').length - 1`, which copies
+      // the whole prefix and splits it again for every pipe in the line. A
+      // separator row is mostly pipes, so drawing one row of a wide table
+      // spent O(chars²) time and O(chars²) garbage. The loop already counts
+      // the same thing as it walks, one `|` at a time.
+      const totalPipes = countPipes(lineContent);
       for (let i = 0; i < lineContent.length; i++) {
         if (lineContent[i] === '|') {
           const pipeByte = charToByte(lineContent, i, byteStart);
@@ -2151,8 +2206,11 @@ function processLineConceals(
 
           let glyph = "│";
           if (isSeparator) {
-            const pipeIndex = lineContent.substring(0, i + 1).split('|').length - 1;
-            const totalPipes = lineContent.split('|').length - 1;
+            // Which pipe this is, 1-based — the old expression counted the
+            // pipes in the prefix *through* this one, so the leading pipe was
+            // 1 and the trailing one equalled the total. `pipeIdx` is 0-based
+            // and advances once per pipe below.
+            const pipeIndex = pipeIdx + 1;
             glyph = '┼';
             if (pipeIndex === 1) glyph = '├';
             else if (pipeIndex === totalPipes) glyph = '┤';
@@ -2177,7 +2235,12 @@ function processLineConceals(
           // renders the replacement; if both fired, the cell would come out
           // one character wider than allocated. On the cursor row the cell is
           // raw (no truncate conceal), so the ─ substitution applies there.
-          const inTruncated = truncatedCellCharRanges.some(r => i >= r.start && i < r.end);
+          //
+          // **Answered from a flag per character, not by walking the ranges
+          // again.** A separator row is nearly all dashes and this ran once
+          // per character over the whole range list, so a wide cell was
+          // O(chars × cells) on its way to drawing a rule.
+          const inTruncated = !!truncatedChars[i];
           const db = charToByte(lineContent, i, byteStart);
           const de = charToByte(lineContent, i + 1, byteStart);
           if (inTruncated) {
