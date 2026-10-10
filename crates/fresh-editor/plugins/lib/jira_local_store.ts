@@ -157,7 +157,8 @@ export function parseTicketDetails(
         details.priority = cleanMarkdownCell(trimmed.replace("- **Priority:**", ""));
       } else if (trimmed.startsWith("- **Story Points:**")) {
         const spStr = cleanMarkdownCell(trimmed.replace("- **Story Points:**", ""));
-        const spNum = parseInt(spStr.replace(/\D/g, ""), 10);
+        const match = spStr.match(/\b(\d+)\b/);
+        const spNum = match ? parseInt(match[1], 10) : parseInt(spStr.replace(/\D/g, ""), 10);
         if (!isNaN(spNum)) details.storyPoints = spNum;
       } else if (trimmed.startsWith("- **Status:**")) {
         details.status = cleanMarkdownCell(trimmed.replace("- **Status:**", ""));
@@ -313,23 +314,29 @@ export function parseSprint(
           if (details.epic) existing.epic = details.epic;
           if (details.dependsOn) existing.dependsOn = details.dependsOn;
         } else if (details.id) {
-          const newTicket: BacklogTicket = {
-            id: details.id,
-            title: tf.name.replace(".md", "").replace(/^[A-Za-z0-9_-]+-/, ""),
-            priority: details.priority || "MEDIUM",
-            storyPoints: details.storyPoints || 1,
-            status: details.status || "READY_FOR_DEV",
-            statusCategory: categorizeStatus(details.status || "READY_FOR_DEV"),
-            targetCodeFile: "",
-            ticketFilePath: absPath,
-            sprintId,
-            sprintDir,
-            boardPath,
-            assignee: details.assignee || "Unassigned",
-            epic: details.epic,
-            dependsOn: details.dependsOn,
-          };
-          ticketsMap.set(details.id, newTicket);
+          const statusLower = (details.status || "").toLowerCase();
+          const isExcluded =
+            statusLower.includes("không thuộc") ||
+            statusLower.includes("unscheduled");
+          if (!isExcluded) {
+            const newTicket: BacklogTicket = {
+              id: details.id,
+              title: tf.name.replace(".md", "").replace(/^[A-Za-z0-9_-]+-/, ""),
+              priority: details.priority || "MEDIUM",
+              storyPoints: details.storyPoints || 1,
+              status: details.status || "READY_FOR_DEV",
+              statusCategory: categorizeStatus(details.status || "READY_FOR_DEV"),
+              targetCodeFile: "",
+              ticketFilePath: absPath,
+              sprintId,
+              sprintDir,
+              boardPath,
+              assignee: details.assignee || "Unassigned",
+              epic: details.epic,
+              dependsOn: details.dependsOn,
+            };
+            ticketsMap.set(details.id, newTicket);
+          }
         }
       }
     }
