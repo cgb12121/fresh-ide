@@ -161,6 +161,15 @@ pub fn editor_tick(
     if editor.process_line_scan() {
         needs_render = true;
     }
+    // Parser completion is polled without waiting. Accepted results belong
+    // to the buffer's current version and request a frame even while idle.
+    for window in editor.windows.values_mut() {
+        for state in window.buffers.as_map_mut().values_mut() {
+            if state.highlighter.poll_background(&state.buffer) {
+                needs_render = true;
+            }
+        }
+    }
     // Repair any LSP document whose change stream was broken while its server
     // was not draining commands, so diagnostics recover without needing the
     // user to type again (#3038).

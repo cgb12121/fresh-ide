@@ -43,6 +43,9 @@ use crate::primitives::highlighter::{
 };
 use crate::theme::Theme;
 use fresh_core::hooks::{RegionLine, TableLine, TableRole};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod markdown_worker;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
@@ -307,6 +310,11 @@ pub struct TextMateEngine {
     // Set once from the syntax name, for the same reason `table_body_scope`
     // is: the decision it feeds has to be made where the name is known.
     markdown_host: bool,
+    structure_cache: Option<StructureCache>,
+    #[cfg(not(target_arch = "wasm32"))]
+    background: Option<markdown_worker::MarkdownWorker>,
+    #[cfg(not(target_arch = "wasm32"))]
+    cancellation: Option<(std::sync::Arc<std::sync::atomic::AtomicU64>, u64)>,
     // Fence-language-token → syntax index memo (None = unrecognized).
     embedded_syntax_memo: HashMap<String, Option<usize>>,
     // Reusable per-line span buffers for embedding hosts, so region
@@ -523,6 +531,36 @@ const TABLE_LOOKAHEAD_BYTES: usize = 8192;
 pub struct StructureLines {
     pub regions: Vec<(usize, RegionLine)>,
     pub tables: Vec<(usize, TableLine)>,
+}
+
+struct StructureCache {
+    version: u64,
+    range: Range<usize>,
+    lines: StructureLines,
+}
+
+impl StructureCache {
+    fn lines_in(&self, version: u64, range: &Range<usize>) -> Option<StructureLines> {
+        if self.version != version || self.range.start > range.start || self.range.end < range.end {
+            return None;
+        }
+        Some(StructureLines {
+            regions: self
+                .lines
+                .regions
+                .iter()
+                .copied()
+                .filter(|(p, _)| range.contains(p))
+                .collect(),
+            tables: self
+                .lines
+                .tables
+                .iter()
+                .copied()
+                .filter(|(p, _)| range.contains(p))
+                .collect(),
+        })
+    }
 }
 
 impl StructureLines {
@@ -1022,6 +1060,11 @@ impl TextMateEngine {
             embedding,
             table_body_scope,
             markdown_host: syntax_name.eq_ignore_ascii_case("markdown"),
+            structure_cache: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            background: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            cancellation: None,
             embedded_syntax_memo: HashMap::new(),
             host_span_scratch: Vec::new(),
             child_span_scratch: Vec::new(),
@@ -1161,6 +1204,77 @@ impl TextMateEngine {
         self.stats = HighlightStats::default();
     }
 
+    /// Enable non-blocking parsing in the editor. Synchronous callers (batch
+    /// tools, exports and tests of the parser itself) retain the direct API.
+    pub fn enable_background_markdown(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.markdown_host && !self.declared_host && self.background.is_none() {
+            match markdown_worker::MarkdownWorker::new(self.syntax_set.clone(), self.syntax_index) {
+                Ok(worker) => self.background = Some(worker),
+                Err(error) => tracing::warn!(%error, "Could not start Markdown parser worker"),
+            }
+        }
+    }
+
+    pub fn poll_background(&mut self, buffer: &Buffer) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &mut self.background {
+            if let Some(response) = worker.poll(buffer.version()) {
+                self.cache = response.cache.map(|cache| TextMateCache {
+                    range: cache.range,
+                    spans: cache.spans,
+                    tail_state: None,
+                });
+                self.structure_cache = Some(StructureCache {
+                    version: response.key.version,
+                    range: response.key.range,
+                    lines: response.structure,
+                });
+                self.last_buffer_len = buffer.len();
+                self.dirty_from = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_background(&mut self, buffer: &Buffer, range: Range<usize>, context: usize) {
+        self.poll_background(buffer);
+        if let Some(worker) = &mut self.background {
+            worker.request(
+                buffer,
+                range.start.min(buffer.len())..range.end.min(buffer.len()),
+                context,
+            );
+        }
+    }
+
+    /// `None` means parsing is pending, not that the document has no structure.
+    /// The renderer must retry these lines rather than marking them as seen.
+    pub fn structure_lines_ready(
+        &mut self,
+        buffer: &Buffer,
+        range: Range<usize>,
+    ) -> Option<StructureLines> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.background.is_some() {
+            self.request_background(buffer, range.clone(), 0);
+            if self
+                .background
+                .as_ref()
+                .is_some_and(|worker| worker.failed())
+            {
+                return Some(StructureLines::default());
+            }
+            return self
+                .structure_cache
+                .as_ref()
+                .and_then(|c| c.lines_in(buffer.version(), &range));
+        }
+        Some(self.structure_lines_in(buffer, range))
+    }
+
     /// Get the tree-sitter language (for indentation, semantic highlighting, etc.)
     pub fn language(&self) -> Option<&Language> {
         self.ts_language.as_ref()
@@ -1169,6 +1283,11 @@ impl TextMateEngine {
     /// Buffer-insert notification. Shifts span offsets in place and marks
     /// the cache dirty so the partial-update path runs on next render.
     pub fn notify_insert(&mut self, position: usize, length: usize) {
+        self.structure_cache = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &mut self.background {
+            worker.edit(markdown_worker::Edit::Insert(position, length));
+        }
         self.checkpoint_markers.adjust_for_insert(position, length);
         self.region_markers.adjust_for_insert(position, length);
         self.active_region = None;
@@ -1193,6 +1312,11 @@ impl TextMateEngine {
 
     /// Buffer-delete notification. Mirror of `notify_insert`.
     pub fn notify_delete(&mut self, position: usize, length: usize) {
+        self.structure_cache = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &mut self.background {
+            worker.edit(markdown_worker::Edit::Delete(position, length));
+        }
         self.checkpoint_markers.adjust_for_delete(position, length);
         self.region_markers.adjust_for_delete(position, length);
         self.active_region = None;
@@ -1270,6 +1394,16 @@ impl TextMateEngine {
         watch_scopes: &[syntect::parsing::Scope],
         mut on_span: impl FnMut(usize, usize, HighlightCategory),
     ) -> (bool, Option<Range<usize>>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|(generation, expected)| {
+                generation.load(std::sync::atomic::Ordering::Relaxed) != *expected
+            })
+        {
+            return (false, None);
+        }
         let ops = match state.parse_line(&prepared.line_for_syntect, &self.syntax_set) {
             Ok(ops) => ops,
             Err(_) => return (false, None),
@@ -1741,6 +1875,15 @@ impl TextMateEngine {
         theme: &Theme,
         context_bytes: usize,
     ) -> Vec<HighlightSpan> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.background.is_some() {
+            self.request_background(buffer, viewport_start..viewport_end, context_bytes);
+            return if self.cache.is_some() {
+                self.filter_cached_spans(viewport_start, viewport_end, theme)
+            } else {
+                Vec::new()
+            };
+        }
         let buf_len = buffer.len();
         // A cold highlighter on a file this size parses the WHOLE file once,
         // and then every frame after it — including every scroll step — is a
@@ -2628,6 +2771,29 @@ impl TextMateEngine {
     /// the engine already documents for styling inside a huge region, and it is
     /// why callers must treat an absent answer as "unknown".
     pub fn structure_lines_in(&mut self, buffer: &Buffer, range: Range<usize>) -> StructureLines {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.background.is_some() {
+            return self
+                .structure_lines_ready(buffer, range)
+                .unwrap_or_default();
+        }
+        if let Some(lines) = self
+            .structure_cache
+            .as_ref()
+            .and_then(|c| c.lines_in(buffer.version(), &range))
+        {
+            return lines;
+        }
+        let lines = self.parse_structure_lines(buffer, range.clone());
+        self.structure_cache = Some(StructureCache {
+            version: buffer.version(),
+            range,
+            lines: lines.clone(),
+        });
+        lines
+    }
+
+    fn parse_structure_lines(&mut self, buffer: &Buffer, range: Range<usize>) -> StructureLines {
         let table_scope = self.table_body_scope;
         if (self.embedding.is_empty() && table_scope.is_none()) || range.start >= range.end {
             return StructureLines::default();
@@ -2829,6 +2995,11 @@ impl TextMateEngine {
 
     /// Invalidate all cache and checkpoints (file reload, language change, etc.)
     pub fn invalidate_all(&mut self) {
+        self.structure_cache = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &mut self.background {
+            worker.invalidate();
+        }
         self.cache = None;
         let ids: Vec<MarkerId> = self.checkpoint_states.keys().copied().collect();
         for id in ids {
@@ -2961,6 +3132,30 @@ impl HighlightEngine {
         match self {
             Self::TextMate(h) => h.structure_lines_in(buffer, range),
             Self::TreeSitter(_) | Self::None => StructureLines::default(),
+        }
+    }
+
+    pub fn enable_background_markdown(&mut self) {
+        if let Self::TextMate(h) = self {
+            h.enable_background_markdown();
+        }
+    }
+
+    pub fn poll_background(&mut self, buffer: &Buffer) -> bool {
+        match self {
+            Self::TextMate(h) => h.poll_background(buffer),
+            _ => false,
+        }
+    }
+
+    pub fn structure_lines_ready(
+        &mut self,
+        buffer: &Buffer,
+        range: Range<usize>,
+    ) -> Option<StructureLines> {
+        match self {
+            Self::TextMate(h) => h.structure_lines_ready(buffer, range),
+            _ => Some(StructureLines::default()),
         }
     }
 

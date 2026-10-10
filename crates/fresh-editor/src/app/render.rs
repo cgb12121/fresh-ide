@@ -770,9 +770,16 @@ impl Editor {
                             // syntaxes with neither (the overwhelming majority),
                             // and each list is skipped when it has nothing to
                             // report.
-                            let structure = state
+                            let Some(structure) = state
                                 .highlighter
-                                .structure_lines_in(&state.buffer, walk_start..walked_end);
+                                .structure_lines_ready(&state.buffer, walk_start..walked_end)
+                            else {
+                                // Pending classification must not become a
+                                // permanent "unknown" decoration. Keep these
+                                // lines unseen and retry after worker delivery.
+                                hooks_deferred = true;
+                                return 0;
+                            };
                             if !structure.regions.is_empty() {
                                 let mut next = 0usize;
                                 for line in new_lines.iter_mut() {

@@ -52,6 +52,12 @@ fn test_markdown_rust_fence_has_language_colors() {
     harness.render().unwrap();
 
     harness.assert_screen_contains("fn answer");
+    // Text is painted immediately; the Markdown worker supplies colors later.
+    harness
+        .wait_until(|h| {
+            fg_at(h, "fn answer") != fg_at(h, "hello") && fg_at(h, "fn answer") != fg_at(h, "42")
+        })
+        .unwrap();
     let keyword_fg = fg_at(&harness, "fn answer");
     let string_fg = fg_at(&harness, "hello");
     let number_fg = fg_at(&harness, "42");
@@ -126,7 +132,7 @@ fn test_vue_script_and_style_blocks_are_language_highlighted() {
     );
 }
 
-/// Typing new code inside a fence gets language highlighting immediately
+/// Typing new code inside a fence gets language highlighting asynchronously
 /// (exercises the engine's incremental partial-update path end-to-end).
 #[test]
 fn test_typing_inside_fence_is_highlighted() {
@@ -150,6 +156,9 @@ fn test_typing_inside_fence_is_highlighted() {
     harness.type_text("    return 7;").unwrap();
     harness.render().unwrap();
 
+    harness
+        .wait_until(|h| fg_at(h, "return") != fg_at(h, "7;"))
+        .unwrap();
     let keyword_fg = fg_at(&harness, "return");
     let number_fg = fg_at(&harness, "7;");
     assert_ne!(

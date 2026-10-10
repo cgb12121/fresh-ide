@@ -10,6 +10,9 @@
 use std::fs;
 use std::path::Path;
 
+#[path = "src/grammars/markdown.rs"]
+mod markdown_grammar;
+
 fn main() {
     println!("cargo::rerun-if-changed=locales");
     println!("cargo::rerun-if-changed=themes");
@@ -235,7 +238,7 @@ fn generate_syntax_packdump(
 
     // Start with syntect's built-in defaults
     let defaults = SyntaxSet::load_defaults_newlines();
-    let mut builder = defaults.into_builder();
+    let mut builder = markdown_grammar::optimize_builtin_builder(defaults.into_builder());
 
     // Add all embedded grammars — must match the list in types.rs add_embedded_grammars()
     let grammar_files: &[(&str, &str)] = &[

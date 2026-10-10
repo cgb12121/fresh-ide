@@ -463,6 +463,7 @@ impl EditorState {
             }
             None => detected.highlighter,
         };
+        self.highlighter.enable_background_markdown();
         if let Some(lang) = &detected.ts_language {
             self.reference_highlighter.set_language(lang);
         }
