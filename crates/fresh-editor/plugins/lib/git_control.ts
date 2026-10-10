@@ -546,3 +546,109 @@ export async function commitStaged(editor: EditorAPI, message: string): Promise<
   }
   return res.stderr || res.stdout || "Git commit failed";
 }
+
+/**
+ * Fetch local branches in the repository.
+ */
+export async function getGitBranches(
+  editor: EditorAPI,
+): Promise<{ current: string; branches: string[] }> {
+  const repo = await resolveGitRepo(editor);
+  if (!repo) {
+    return { current: "", branches: [] };
+  }
+  try {
+    const res = await git(editor, repo, ["branch", "--format=%(refname:short)"]);
+    if (res.exit_code === 0) {
+      const branches = res.stdout
+        .split("\n")
+        .map((b) => b.trim())
+        .filter((b) => b.length > 0);
+
+      const headRes = await git(editor, repo, ["branch", "--show-current"]);
+      const current = headRes.stdout.trim() || (branches[0] ?? "");
+      return { current, branches };
+    }
+  } catch {}
+  return { current: "", branches: [] };
+}
+
+/**
+ * Switch to a specified branch (`git checkout <branch>`).
+ */
+export async function checkoutBranch(
+  editor: EditorAPI,
+  branchName: string,
+): Promise<{ success: boolean; message: string }> {
+  const repo = await resolveGitRepo(editor);
+  if (!repo) {
+    return { success: false, message: "Not inside a git repository" };
+  }
+  try {
+    const res = await git(editor, repo, ["checkout", branchName]);
+    if (res.exit_code === 0) {
+      return { success: true, message: `Switched to branch '${branchName}'` };
+    } else {
+      const err = (res.stderr || res.stdout || "").trim();
+      return { success: false, message: err || `Failed to checkout '${branchName}'` };
+    }
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+/**
+ * Create a new git branch and optionally check it out.
+ */
+export async function createBranch(
+  editor: EditorAPI,
+  branchName: string,
+  checkout = true,
+): Promise<{ success: boolean; message: string }> {
+  const repo = await resolveGitRepo(editor);
+  if (!repo) return { success: false, message: "Not inside a git repository" };
+
+  const trimmed = branchName.trim();
+  if (!trimmed) return { success: false, message: "Branch name cannot be empty" };
+
+  try {
+    const args = checkout ? ["checkout", "-b", trimmed] : ["branch", trimmed];
+    const res = await git(editor, repo, args);
+    if (res.exit_code === 0) {
+      return { success: true, message: `Created branch '${trimmed}'` };
+    }
+    const err = (res.stderr || res.stdout || "").trim();
+    return { success: false, message: err || `Failed to create branch '${trimmed}'` };
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+/**
+ * Delete a git branch.
+ */
+export async function deleteBranch(
+  editor: EditorAPI,
+  branchName: string,
+  force = false,
+): Promise<{ success: boolean; message: string }> {
+  const repo = await resolveGitRepo(editor);
+  if (!repo) return { success: false, message: "Not inside a git repository" };
+
+  const trimmed = branchName.trim();
+  if (!trimmed) return { success: false, message: "Branch name cannot be empty" };
+
+  try {
+    const flag = force ? "-D" : "-d";
+    const res = await git(editor, repo, ["branch", flag, trimmed]);
+    if (res.exit_code === 0) {
+      return { success: true, message: `Deleted branch '${trimmed}'` };
+    }
+    const err = (res.stderr || res.stdout || "").trim();
+    return { success: false, message: err || `Failed to delete branch '${trimmed}'` };
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+

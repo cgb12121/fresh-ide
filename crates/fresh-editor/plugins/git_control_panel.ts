@@ -11,11 +11,14 @@ import {
   button,
   col,
   divider,
+  dropdown,
   flexSpacer,
   label,
+  labeledSection,
   row,
   spacer,
   textArea,
+  textInput,
   type WidgetSpec,
   type WidgetEvt,
   type StyledSegment,
@@ -24,6 +27,10 @@ import {
 import {
   getGitStatus,
   getGitGraph,
+  getGitBranches,
+  checkoutBranch,
+  createBranch,
+  deleteBranch,
   stageFile,
   stageAll,
   unstageFile,
@@ -47,12 +54,23 @@ const PANEL_ID = 401; // Stable unique ID for Git Control Section
 
 let statusSummary: GitStatusSummary | null = null;
 let graphLines: GitGraphLine[] = [];
+let availableBranches: string[] = [];
+let currentBranchName = "";
 let commitText = "";
+let isCommitMsgFocused = false;
+let isRefreshing = false;
+let pendingRefresh = false;
 let statusFeedback = "";
 let isStagedCollapsed = false;
 let isUnstagedCollapsed = false;
 let isGraphCollapsed = false;
 let isMounted = false;
+
+// Modal dialog state for Branch operations (Large pop-up cards)
+let activeBranchDialog: "none" | "create" | "delete" = "none";
+let newBranchInputName = "";
+let deleteBranchSelectedIdx = 0;
+let deleteBranchForce = false;
 let commitPreviewBufferId: number | null = null;
 let commitPreviewSplitId: number | null = null;
 let commitPreviewContent = "";
@@ -71,18 +89,34 @@ let diffSourceBuffers: { oldId: number; newId: number } | null = null;
 const GIT_ADDED_COLOR: [number, number, number] = [86, 211, 100];
 const GIT_DELETED_COLOR: [number, number, number] = [248, 81, 73];
 
-// Refresh git status and graph
+// Refresh git status, graph, and branches with serialization/debounce
 export async function refreshGitData(): Promise<void> {
+  if (isRefreshing) {
+    pendingRefresh = true;
+    return;
+  }
+  isRefreshing = true;
   try {
-    const [status, graph] = await Promise.all([
+    const [status, graph, branchInfo] = await Promise.all([
       getGitStatus(editor),
       getGitGraph(editor, 25),
+      getGitBranches(editor),
     ]);
     statusSummary = status;
     graphLines = graph;
+    availableBranches = branchInfo.branches;
+    currentBranchName = branchInfo.current || status?.branch || "";
   } catch {
     statusFeedback = "Failed to refresh git status";
+  } finally {
+    isRefreshing = false;
   }
+
+  if (pendingRefresh) {
+    pendingRefresh = false;
+    return refreshGitData();
+  }
+
   if (isMounted) {
     updatePanel();
   }
@@ -91,14 +125,33 @@ export async function refreshGitData(): Promise<void> {
 // File staging does not change the commit graph. Avoid resolving the repo and
 // spawning `git log` after every + / - click.
 async function refreshGitStatusData(): Promise<void> {
+  if (isRefreshing) {
+    pendingRefresh = true;
+    return;
+  }
+  isRefreshing = true;
   try {
     // The working tree just moved under us (staging, discard, save), so any
     // memoized blob from before this refresh is no longer the truth.
     clearGitFileCaches();
-    statusSummary = await getGitStatus(editor);
+    const [status, branchInfo] = await Promise.all([
+      getGitStatus(editor),
+      getGitBranches(editor),
+    ]);
+    statusSummary = status;
+    availableBranches = branchInfo.branches;
+    currentBranchName = branchInfo.current || status?.branch || "";
   } catch {
     statusFeedback = "Failed to refresh git status";
+  } finally {
+    isRefreshing = false;
   }
+
+  if (pendingRefresh) {
+    pendingRefresh = false;
+    return refreshGitStatusData();
+  }
+
   updatePanel();
 }
 
@@ -421,37 +474,8 @@ function getChangePathStyle(status: string): StyledSegment["style"] {
 }
 
 /**
- * Shorten a repo-relative path from the LEFT, keeping the filename intact.
- *
- * A monorepo path is mostly directory prefix nobody scans for
- * (`BE/webhook-delivery-service/src/main/java/com/paymenow/...`), and the tail
- * is the part that identifies the file. The panel is also narrow: without a
- * cap, a long path pushes the `-`/`+`/`↺` buttons past the sidebar edge, which
- * is how the actions stopped being clickable at all.
- */
-function shortenPath(path: string, max = 38): string {
-  if (path.length <= max) return path;
-  const parts = path.split("/");
-  const file = parts.pop() ?? "";
-  const dir = parts.join("/");
-  // Budget for the elided marker plus the separator.
-  const keep = max - file.length - 2;
-  if (keep <= 4) {
-    return `…/${file.slice(Math.max(0, file.length - (max - 2)))}`;
-  }
-  return `…${dir.slice(Math.max(0, dir.length - keep))}/${file}`;
-}
-
-/**
- * Builds the widget spec tree for the Git Control Panel.
- */
-/**
  * What a right press landed on: a changed file and where it sits, or a
  * commit in the graph.
- *
- * The row's buttons all name the same file in different keys, so the menu is
- * built from whichever one was pressed rather than from a second piece of
- * state kept in step with them.
  */
 type ContextTarget =
   | { kind: "file"; path: string; staged: boolean }
@@ -487,13 +511,6 @@ function isStagedPath(path: string): boolean {
 
 /**
  * The menu a right press on this row opens.
- *
- * Declared on the button rather than built by the plugin: the host opens it
- * at the press's own cell, with the same geometry, ↑/↓ navigation and
- * outside-dismiss the file explorer's menu has, and the plugin is not asked
- * anything until an item is chosen. A plugin round-trip to open a menu is a
- * round-trip inside the press that asked for it — which is the one way to
- * open a menu that can end up re-entering the renderer.
  */
 function contextMenuFor(target: ContextTarget): string[] {
   if (target.kind === "commit") {
@@ -509,8 +526,7 @@ function contextMenuFor(target: ContextTarget): string[] {
   return items;
 }
 
-/** Run what the native menu offered. The host names the button the menu was
- *  opened from and the label chosen, so the plugin matches on both. */
+/** Run what the native menu offered. */
 async function runContextMenuChoice(key: string, label: string): Promise<void> {
   const target = contextTargetOf(key);
   if (!target) return;
@@ -556,11 +572,40 @@ async function runContextMenuChoice(key: string, label: string): Promise<void> {
   await refreshGitStatusData();
 }
 
-/** Tail-elide a commit subject. Not `shortenPath`: a subject has no
- *  separators to keep the tail of, and it wants the beginning — that is the
- *  part a commit is identified by. */
-function shortenSubject(subject: string, max = 30): string {
-  return subject.length <= max ? subject : `${subject.slice(0, max - 1)}…`;
+/**
+ * Calculate available display width of the sidebar dynamically.
+ * Default fallback is 40 columns if dockCols is unset or 0.
+ */
+function getSidebarWidth(): number {
+  try {
+    const cols = editor.dockCols();
+    if (typeof cols === "number" && cols > 15) {
+      return cols;
+    }
+  } catch {}
+  return 40;
+}
+
+/**
+ * Shorten a repo-relative path from the LEFT, keeping the filename intact.
+ *
+ * Dynamically budgets based on current sidebar width minus action buttons (+, ↺ / -)
+ * and status badge, ensuring buttons are always pinned on the right and never pushed off.
+ */
+function shortenPath(path: string, reservedActionsWidth = 10): string {
+  const sidebarCols = getSidebarWidth();
+  // Budget available for path: sidebar width minus margins/badges/action buttons
+  const max = Math.max(12, sidebarCols - reservedActionsWidth);
+  if (path.length <= max) return path;
+  const parts = path.split("/");
+  const file = parts.pop() ?? "";
+  const dir = parts.join("/");
+  // Budget for the elided marker plus the separator.
+  const keep = max - file.length - 2;
+  if (keep <= 4) {
+    return `…/${file.slice(Math.max(0, file.length - (max - 2)))}`;
+  }
+  return `…${dir.slice(Math.max(0, dir.length - keep))}/${file}`;
 }
 
 export function buildGitPanelSpec(): WidgetSpec {
@@ -581,13 +626,10 @@ export function buildGitPanelSpec(): WidgetSpec {
     rowCursor += rows;
   };
 
-  // 1. Top status line: Branch & toolbar buttons
-  const branchName = statusSummary
-    ? `${statusSummary.branch}${statusSummary.upstream ? ` ⇄ ${statusSummary.upstream} ↑${statusSummary.ahead} ↓${statusSummary.behind}` : " · no upstream"}`
-    : "no-repo";
+  // 1. Top status line: Title & toolbar buttons (no + All / - All)
   push(
     row(
-      label(`\u{f126} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
+      label(`\u{f126} Source Control`, { style: { bold: true, fg: "syntax.keyword" } }),
       flexSpacer(),
       button("⟳", {
         key: "git_refresh",
@@ -595,25 +637,150 @@ export function buildGitPanelSpec(): WidgetSpec {
         hoverStyle: { fg: "syntax.function" },
       }),
       spacer(1),
-      button("Fetch", { key: "git_fetch", bare: true, hoverStyle: { fg: "syntax.function" } }),
-      spacer(1),
-      button("+ All", {
-        key: "git_stage_all",
-        bare: true,
-        hoverStyle: { fg: "ui.file_status_added_fg" },
-      }),
-      spacer(1),
-      button("- All", {
-        key: "git_unstage_all",
-        bare: true,
-        hoverStyle: { fg: "ui.file_status_modified_fg" },
-      })
+      button("Fetch", { key: "git_fetch", bare: true, hoverStyle: { fg: "syntax.function" } })
     )
   );
 
+  // Branch Selection Dropdown with New (+) and Delete (🗑) actions
+  if (availableBranches.length > 0) {
+    let branchIdx = availableBranches.indexOf(currentBranchName);
+    if (branchIdx < 0) {
+      if (currentBranchName) {
+        availableBranches.unshift(currentBranchName);
+        branchIdx = 0;
+      } else {
+        branchIdx = 0;
+      }
+    }
+
+    push(
+      row(
+        label("Branch: ", { style: { bold: true, fg: "syntax.type" } }),
+        dropdown(availableBranches, {
+          selectedIndex: branchIdx,
+          key: "git_branch_dropdown",
+        }),
+        flexSpacer(),
+        button(" + ", {
+          key: "git_branch_new",
+          bare: true,
+          style: { fg: "syntax.string", bold: true },
+          hoverStyle: { fg: "syntax.keyword", bold: true },
+        }),
+        spacer(1),
+        button(" 🗑 ", {
+          key: "git_branch_del",
+          bare: true,
+          style: { fg: "syntax.error" },
+          hoverStyle: { fg: "syntax.keyword", bold: true },
+        })
+      )
+    );
+
+    if (statusSummary?.upstream) {
+      const aheadBehind = statusSummary.ahead || statusSummary.behind
+        ? ` (↑${statusSummary.ahead} ↓${statusSummary.behind})`
+        : "";
+      push(
+        label(`  ⇄ ${statusSummary.upstream}${aheadBehind}`, {
+          style: { fg: "editor.line_number_fg" },
+        })
+      );
+    }
+  } else if (statusSummary?.branch) {
+    push(
+      row(
+        label(`\u{f126} ${statusSummary.branch}`, {
+          style: { bold: true, fg: "syntax.keyword" },
+        }),
+        flexSpacer(),
+        button(" + ", {
+          key: "git_branch_new",
+          bare: true,
+          style: { fg: "syntax.string", bold: true },
+          hoverStyle: { fg: "syntax.keyword", bold: true },
+        })
+      )
+    );
+  }
+
+  // --- Prominent Pop-up Modal Dialogs for Branch Creation & Deletion ---
+  if (activeBranchDialog === "create") {
+    push(
+      labeledSection({
+        label: "Create New Branch",
+        child: col(
+          label("Enter branch name:"),
+          textInput(newBranchInputName, {
+            key: "dialog_branch_name_input",
+            placeholder: "e.g. feature/my-branch",
+            fullWidth: true,
+            focused: true,
+          }),
+          spacer(1),
+          row(
+            flexSpacer(),
+            button("Cancel", {
+              key: "dialog_branch_cancel",
+              bare: false,
+            }),
+            spacer(1),
+            button("Create & Checkout", {
+              key: "dialog_branch_create_confirm",
+              intent: "primary",
+            })
+          )
+        ),
+      }),
+      5
+    );
+  } else if (activeBranchDialog === "delete") {
+    const deletableBranches = availableBranches.filter((b) => b !== currentBranchName);
+    const delIdx = Math.min(deleteBranchSelectedIdx, Math.max(0, deletableBranches.length - 1));
+    push(
+      labeledSection({
+        label: "Delete Branch",
+        child: col(
+          deletableBranches.length > 0
+            ? col(
+                label("Select branch to delete:"),
+                dropdown(deletableBranches, {
+                  selectedIndex: delIdx,
+                  key: "dialog_del_branch_dropdown",
+                }),
+                spacer(1),
+                row(
+                  button(deleteBranchForce ? "[v] Force delete (-D)" : "[ ] Force delete (-D)", {
+                    key: "dialog_del_toggle_force",
+                    bare: true,
+                    style: { fg: deleteBranchForce ? "syntax.error" : "editor.fg" },
+                  })
+                )
+              )
+            : label("No other local branches to delete.", { style: { fg: "editor.line_number_fg" } }),
+          spacer(1),
+          row(
+            flexSpacer(),
+            button("Cancel", {
+              key: "dialog_branch_cancel",
+              bare: false,
+            }),
+            spacer(1),
+            button("Delete", {
+              key: "dialog_branch_delete_confirm",
+              intent: "danger",
+              disabled: deletableBranches.length === 0,
+            })
+          )
+        ),
+      }),
+      6
+    );
+  }
+
   push(divider({ ch: "─" }));
 
-  // 2. Commit message input box and Commit button
+  // 2. Commit message input box and Commit button (follows tab width)
   push(
     row(
       textArea({
@@ -623,6 +790,8 @@ export function buildGitPanelSpec(): WidgetSpec {
         fullWidth: true,
         rows: 4,
         maxRows: 6,
+        blockCaret: true,
+        focused: isCommitMsgFocused,
       })
     ),
     4
@@ -640,7 +809,7 @@ export function buildGitPanelSpec(): WidgetSpec {
 
   push(divider({ ch: "─" }));
 
-  // 3. Staged Changes Section
+  // 3. Staged Changes Section (Action buttons pinned to rightmost edge)
   const stagedCount = statusSummary?.staged.length ?? 0;
   const stagedHeader = `${isStagedCollapsed ? "▶" : "▼"} STAGED CHANGES (${stagedCount})`;
   if (stagedCount > 0) {
@@ -653,16 +822,11 @@ export function buildGitPanelSpec(): WidgetSpec {
     if (!isStagedCollapsed) {
       for (const item of statusSummary!.staged) {
         const badge = getStatusBadgeStyle(item.status);
-        const path = shortenPath(item.path);
-        // Right at the end of the name: no trailing space, because the menu
-        // drops from this cell and one column of slack showed the panel's own
-        // text in the gutter beside it.
+        // Reserve 8 cols for badge (3) + flexSpacer + action button (1) + safety margin (4)
+        const path = shortenPath(item.path, 8);
         push(
           row(
             label(badge.text, { style: badge.style }),
-            // Not `fullWidth`: a stretching label outgrows the sidebar and
-            // pushes the action buttons off the edge, where they render but
-            // cannot be hit. The spacer below already does the pushing.
             button(path, {
               key: `git_preview_file:staged:${item.path}`,
               bare: true,
@@ -686,7 +850,7 @@ export function buildGitPanelSpec(): WidgetSpec {
     }
   }
 
-  // 4. Changes (Unstaged) Section
+  // 4. Changes (Unstaged) Section (Action buttons pinned to rightmost edge)
   const unstagedCount = statusSummary?.unstaged.length ?? 0;
   const unstagedHeader = `${isUnstagedCollapsed ? "▶" : "▼"} CHANGES (${unstagedCount})`;
   if (unstagedCount > 0) {
@@ -696,10 +860,11 @@ export function buildGitPanelSpec(): WidgetSpec {
       style: { bold: true, fg: "ui.file_status_modified_fg" },
     })));
 
-  if (!isUnstagedCollapsed) {
+    if (!isUnstagedCollapsed) {
       for (const item of statusSummary!.unstaged) {
         const badge = getStatusBadgeStyle(item.status);
-        const path = shortenPath(item.path);
+        // Reserve 12 cols for badge (3) + flexSpacer + actions [+] [↺] (4) + safety margins (5)
+        const path = shortenPath(item.path, 12);
         push(
           row(
             label(badge.text, { style: badge.style }),
@@ -734,7 +899,7 @@ export function buildGitPanelSpec(): WidgetSpec {
 
   if (stagedCount > 0 || unstagedCount > 0) push(divider({ ch: "─" }));
 
-  // 5. Git Graph Section (Lower Half)
+  // 5. Git Graph Section (Lower Half: dynamically fits available width)
   const graphHeader = `${isGraphCollapsed ? "▶" : "▼"} GIT GRAPH`;
   push(
     row(
@@ -753,18 +918,19 @@ export function buildGitPanelSpec(): WidgetSpec {
       );
     } else {
       for (const g of graphLines) {
-        // The graph string is the first cell, then a space, the 7-char hash,
-        // then a space — so the menu hangs off the end of the subject.
-        const subject = shortenSubject(g.subject);
-                push(
+        push(
           row(
             label(g.graph, { style: { fg: "syntax.string", bold: true } }),
             spacer(1),
             label(g.hash ? g.hash.slice(0, 7) : "", { style: { fg: "syntax.number" } }),
             spacer(1),
-            button(subject, { key: `git_commit:${g.hash}`, bare: true, fullWidth: true,
-              style: { fg: "syntax.string" }, hoverStyle: { fg: "syntax.function", underline: true, bold: true },
-              contextMenu: contextMenuFor({ kind: "commit", hash: g.hash }) })
+            button(g.subject, {
+              key: `git_commit:${g.hash}`,
+              bare: true,
+              style: { fg: "syntax.string" },
+              hoverStyle: { fg: "syntax.function", underline: true, bold: true },
+              contextMenu: contextMenuFor({ kind: "commit", hash: g.hash }),
+            })
           )
         );
       }
@@ -821,8 +987,37 @@ editor.on("widget_event", async (event: WidgetEvt) => {
   const key = event.widget_key ?? "";
 
   // Commit text input change
-  if (key === "git_commit_msg" && event.event_type === "change") {
-    commitText = String((event.payload as { value?: unknown })?.value ?? "");
+  if (key === "git_commit_msg") {
+    isCommitMsgFocused = true;
+    if (event.event_type === "change") {
+      commitText = String((event.payload as { value?: unknown })?.value ?? "");
+    }
+    return;
+  }
+
+  // Branch selection dropdown change (optimized with optimistic update)
+  if (key === "git_branch_dropdown" && event.event_type === "change") {
+    const payload = event.payload as { index?: number; value?: string } | undefined;
+    const selectedIdx = payload?.index;
+    if (
+      typeof selectedIdx === "number" &&
+      selectedIdx >= 0 &&
+      selectedIdx < availableBranches.length
+    ) {
+      const targetBranch = availableBranches[selectedIdx];
+      if (targetBranch && targetBranch !== currentBranchName) {
+        statusFeedback = `Switching to branch '${targetBranch}'...`;
+        currentBranchName = targetBranch; // optimistic UI update
+        updatePanel();
+        const res = await checkoutBranch(editor, targetBranch);
+        if (res.success) {
+          statusFeedback = `Switched to branch '${targetBranch}'.`;
+        } else {
+          statusFeedback = res.message || `Failed to checkout '${targetBranch}'`;
+        }
+        await refreshGitData();
+      }
+    }
     return;
   }
 
@@ -838,6 +1033,100 @@ editor.on("widget_event", async (event: WidgetEvt) => {
 
   // All remaining controls are click/activate actions
   if (event.event_type !== "activate" && event.event_type !== "select") {
+    return;
+  }
+
+  // Branch create input text change
+  if (key === "dialog_branch_name_input" && event.event_type === "change") {
+    newBranchInputName = String((event.payload as { value?: unknown })?.value ?? "");
+    return;
+  }
+
+  // Branch delete dropdown selection change
+  if (key === "dialog_del_branch_dropdown" && event.event_type === "change") {
+    const payload = event.payload as { index?: number } | undefined;
+    if (typeof payload?.index === "number") {
+      deleteBranchSelectedIdx = payload.index;
+      updatePanel();
+    }
+    return;
+  }
+
+  // Branch delete force toggle
+  if (key === "dialog_del_toggle_force") {
+    deleteBranchForce = !deleteBranchForce;
+    updatePanel();
+    return;
+  }
+
+  // Close / Cancel Branch dialog
+  if (key === "dialog_branch_cancel") {
+    activeBranchDialog = "none";
+    newBranchInputName = "";
+    statusFeedback = "";
+    updatePanel();
+    return;
+  }
+
+  // Confirm Branch Creation
+  if (key === "dialog_branch_create_confirm") {
+    const name = newBranchInputName.trim();
+    if (!name) {
+      statusFeedback = "Branch name cannot be empty";
+      updatePanel();
+      return;
+    }
+    statusFeedback = `Creating branch '${name}'...`;
+    activeBranchDialog = "none";
+    updatePanel();
+    const res = await createBranch(editor, name, true);
+    statusFeedback = res.message;
+    await refreshGitData();
+    return;
+  }
+
+  // Confirm Branch Deletion
+  if (key === "dialog_branch_delete_confirm") {
+    const deletableBranches = availableBranches.filter((b) => b !== currentBranchName);
+    const targetBranch = deletableBranches[deleteBranchSelectedIdx];
+    if (!targetBranch) {
+      statusFeedback = "Please select a branch to delete";
+      updatePanel();
+      return;
+    }
+    statusFeedback = `Deleting branch '${targetBranch}'...`;
+    activeBranchDialog = "none";
+    updatePanel();
+    const res = await deleteBranch(editor, targetBranch, deleteBranchForce);
+    if (!res.success && !deleteBranchForce && res.message.toLowerCase().includes("not fully merged")) {
+      statusFeedback = `Branch '${targetBranch}' is not fully merged. Enable [Force delete] to delete.`;
+      // Re-open dialog with force option highlighted
+      activeBranchDialog = "delete";
+      deleteBranchForce = true;
+      updatePanel();
+      return;
+    }
+    statusFeedback = res.message;
+    await refreshGitData();
+    return;
+  }
+
+  // Branch create (+) button clicked -> Open large pop-up card
+  if (key === "git_branch_new") {
+    activeBranchDialog = "create";
+    newBranchInputName = "";
+    statusFeedback = "";
+    updatePanel();
+    return;
+  }
+
+  // Branch delete (🗑) button clicked -> Open large pop-up card with dropdown
+  if (key === "git_branch_del") {
+    activeBranchDialog = "delete";
+    deleteBranchSelectedIdx = 0;
+    deleteBranchForce = false;
+    statusFeedback = "";
+    updatePanel();
     return;
   }
 

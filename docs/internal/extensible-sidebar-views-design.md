@@ -56,22 +56,34 @@ plane under `workbench-views`. Each plugin has a separate QuickJS context;
 
 ### 3.1 Git Data Service (`lib/git_control.ts`)
 - Leverages `lib/git_repo.ts` (`resolveGitRepo`, `git(editor, repo, args)`).
-- Executes `git status --porcelain=v1 -u` to extract staged, unstaged, and untracked file sets.
-- Executes `git log --graph --oneline --decorate -n <limit>` to extract commit graph topology and ref tags.
+- Memoizes repository top-level directory resolutions (`repoCache`) to eliminate redundant process spawn overhead.
+- Executes `git status --porcelain=v2 --branch -u` to extract staged, unstaged, and branch state in a single pass.
+- Discovers available local branches (`getGitBranches`), performs branch switches (`checkoutBranch`), creates new branches (`createBranch`), and deletes branches (`deleteBranch`).
 - Provides operations: `stageFile`, `unstageFile`, `stageAll`, `unstageAll`, `discardFile`, `commit`.
 
-### 3.2 Visual Staging and Staged/Unstaged UI
-- Header row with active branch name and Refresh `⟳` action.
-- Single-line commit message input box with Commit action.
+### 3.2 Visual Staging, Branch Management and Staged/Unstaged UI
+- Header row with Source Control title, Refresh `⟳`, and Fetch (decluttered by removing redundant top `+ All` / `- All` buttons).
+- **Branch Selection & Lifecycle Row**:
+  - Native `dropdown` widget enumerating local git branches. Selecting any branch performs an optimistic UI switch followed by serialized branch checkout and background sync.
+  - Quick action buttons: `[+]` Create new branch; `[🗑]` Delete branch, right-aligned to the panel's right border via `flexSpacer()`.
+  - **Prominent Pop-Up Modal Cards (`labeledSection`)**:
+    - Branch creation opens a dedicated modal card with text input (`dialog_branch_name_input`), placeholder, `[Cancel]`, and `[Create & Checkout]` buttons.
+    - Branch deletion opens a dedicated modal card containing a target branch `dropdown` (excluding current checked-out branch), `[Force delete (-D)]` checkbox toggle, `[Cancel]`, and `[Delete]` danger action.
+- Upstream sync indicator (`⇄ origin/branch (↑ahead ↓behind)`).
+- Multi-line commit message input box (`textArea`) featuring an explicit reversed block caret (`blockCaret: true`), dynamic full-width stretching following tab width, and Commit action (`Ctrl+Enter`).
+- Debounced and serialized data refreshing (`refreshGitData`, `refreshGitStatusData`) ensuring concurrent buffer and window events never stampede the Git process scheduler.
+- **Dynamic Width Budgeting & Pinned Right-Aligned Actions**:
+  - Dynamically budgets file path length (`shortenPath`) based on actual sidebar column width (`editor.dockCols()`).
+  - Staged and unstaged change rows pin action buttons (`[-]`, `[+]`, `[↺]`) flush to the rightmost edge via `flexSpacer()`.
+  - Path strings are truncated with an ellipsis on the left if necessary, guaranteeing buttons are never pushed past the screen edge or obscured.
 - Accordion sections:
-  - **Staged Changes (`count`)**: lists files with `[-]` Unstage button.
-  - **Changes / Unstaged (`count`)**: lists files with `[+]` Stage button and `[↺]` Discard button.
-  - Toggle between Flat view and Folder Tree view.
+  - **Staged Changes (`count`)**: lists files with right-aligned `[-]` Unstage button.
+  - **Changes / Unstaged (`count`)**: lists files with right-aligned `[+]` Stage button and `[↺]` Discard button.
   - Clicking any file opens a live diff buffer against HEAD or working tree.
 
 ### 3.3 Visual Git Graph
 - Renders branch graph glyphs (`*`, `| \`, `| *`, `* |`) with colored nodes.
-- Shows short hash, decoration badges (`(HEAD -> master, origin/master)`), and commit subject.
+- Shows short hash, decoration badges (`(HEAD -> master, origin/master)`), and full commit subjects rendering naturally across the split without artificial hard-coded string caps or synthetic dots.
 
 ---
 

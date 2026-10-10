@@ -46,18 +46,29 @@ export function gitCwdCandidate(editor: EditorAPI): string {
   return editor.getCwd();
 }
 
+const repoCache = new Map<string, GitRepo | null>();
+
 /** Resolve the git repo containing `dir`, or null if `dir` is not inside one. */
 async function repoAt(editor: EditorAPI, dir: string): Promise<GitRepo | null> {
+  if (repoCache.has(dir)) {
+    return repoCache.get(dir) ?? null;
+  }
   try {
     const r = await editor.spawnProcess(
       "git",
       ["rev-parse", "--show-toplevel"],
       dir,
     );
-    if (r.exit_code !== 0) return null;
+    if (r.exit_code !== 0) {
+      repoCache.set(dir, null);
+      return null;
+    }
     const root = r.stdout.trim();
-    return root ? { root } : null;
+    const res = root ? { root } : null;
+    repoCache.set(dir, res);
+    return res;
   } catch {
+    repoCache.set(dir, null);
     return null;
   }
 }
