@@ -2788,6 +2788,19 @@ pub enum WidgetSpec {
         #[ts(type = "Partial<OverlayOptions>")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<OverlayOptions>,
+        /// The menu a right press on this button opens, as item labels in
+        /// display order. `None` (the default) means the press raises the
+        /// plugin's `context` `widget_event` instead, which is how a plugin
+        /// that wants to build its own menu says so.
+        ///
+        /// Declaring the items here is what makes the menu *native*: the
+        /// host opens it at the press's own cell, with the same geometry,
+        /// ↑/↓ navigation and outside-dismiss the file explorer's menu has,
+        /// and the plugin is not asked anything until an item is chosen.
+        /// A plugin round-trip to open a menu is a round-trip inside the
+        /// press that asked for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_menu: Option<Vec<String>>,
     },
     /// Horizontal whitespace eater. In a `Row`, produces `cols`
     /// spaces (or fills remaining width if `flex: true`); in a
@@ -3406,6 +3419,17 @@ pub enum WidgetSpec {
         /// own position in the tree.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         anchor: Option<[u32; 2]>,
+        /// Which edge of the anchor the popup lines up with on the axis it
+        /// does not use: `"start"`, `"center"` or `"end"`. `None` keeps the
+        /// layer's own left edge, which for a popup under a narrow panel means
+        /// flush with that panel's left border — almost never where a menu
+        /// belongs.
+        ///
+        /// Naming it here is also what turns the drop into a drop: a popup
+        /// with an alignment drops *below* its anchor, while an unaligned one
+        /// stays on the anchor's own row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        align: Option<String>,
         /// When true, the popup escapes the panel's clipping and is
         /// painted at screen level (what the dropdown pop-over does);
         /// false keeps it panel-clipped like `Overlay`.

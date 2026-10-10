@@ -1149,6 +1149,8 @@ pub struct Window {
     /// Close-split confirmation popup state (left-click on a split tab bar's
     /// `×` button). Offers "Close split" / "Cancel".
     pub close_split_menu: Option<crate::app::types::CloseSplitMenu>,
+    /// A context menu a plugin declared on a button it right-pressed.
+    pub plugin_context_menu: Option<crate::app::types::PluginContextMenu>,
 
     /// Theme inspector popup (Ctrl+Right-Click) anchored in this window.
     pub theme_info_popup: Option<crate::app::types::ThemeInfoPopup>,
@@ -1396,6 +1398,9 @@ impl Window {
         if let Some(m) = &self.close_split_menu {
             return Some((ContextMenuKind::CloseSplit, &m.menu));
         }
+        if let Some(m) = &self.plugin_context_menu {
+            return Some((ContextMenuKind::Plugin, &m.menu));
+        }
         None
     }
 
@@ -1423,6 +1428,7 @@ impl Window {
             ContextMenuKind::NewTab => self.new_tab_menu.as_mut().map(|m| &mut m.menu),
             ContextMenuKind::Tab => self.tab_context_menu.as_mut().map(|m| &mut m.menu),
             ContextMenuKind::CloseSplit => self.close_split_menu.as_mut().map(|m| &mut m.menu),
+            ContextMenuKind::Plugin => self.plugin_context_menu.as_mut().map(|m| &mut m.menu),
         }
     }
 
@@ -1461,6 +1467,13 @@ impl Window {
                 .iter()
                 .map(|i| i.label())
                 .collect(),
+            ContextMenuKind::Plugin => self
+                .plugin_context_menu
+                .as_ref()?
+                .items
+                .iter()
+                .cloned()
+                .collect(),
         })
     }
 
@@ -1471,6 +1484,7 @@ impl Window {
         self.new_tab_menu = None;
         self.file_explorer_context_menu = None;
         self.close_split_menu = None;
+        self.plugin_context_menu = None;
     }
 
     /// Apply LSP folding ranges to the named buffer's `folding_ranges`
@@ -2563,6 +2577,7 @@ impl Window {
             new_tab_menu: None,
             file_explorer_context_menu: None,
             close_split_menu: None,
+        plugin_context_menu: None,
             theme_info_popup: None,
             event_debug: None,
             file_open_state: None,
@@ -2973,6 +2988,7 @@ impl Window {
                     hover_plus: hover_plus == Some(leaf),
                     reveal: Some(self.tab_reveal_for(leaf)),
                     preview_label: preview_label.clone(),
+                    max_name_cols: self.config().editor.tab_name_max_cols,
                 },
             );
         }

@@ -455,6 +455,16 @@ export function button(
      * can say that a word IS a control. `{ underline: true }` is the
      * conventional mark. */
     style?: Partial<OverlayOptions>;
+    /** The menu a right press on this button opens, as item labels in
+     * display order. Omit it and the press raises the plugin's `context`
+     * `widget_event` instead.
+     *
+     * Declaring the items is what makes the menu native: the host opens it
+     * at the press's own cell, with the same geometry, ↑/↓ navigation and
+     * outside-dismiss the file explorer's menu has, and the plugin is not
+     * asked anything until an item is chosen. A plugin round-trip to open a
+     * menu is a round-trip inside the press that asked for it. */
+    contextMenu?: string[];
   },
 ): WidgetSpec {
   const spec: WidgetSpec = {
@@ -473,6 +483,7 @@ export function button(
   // as the host's `Option<OverlayOptions>`.
   if (options?.hoverStyle !== undefined) spec.hoverStyle = options.hoverStyle;
   if (options?.style !== undefined) spec.style = options.style;
+  if (options?.contextMenu !== undefined) spec.contextMenu = options.contextMenu;
   return spec;
 }
 
@@ -922,6 +933,10 @@ export function textArea(
     fieldWidth?: number;
     fullWidth?: boolean;
     key?: string;
+    /** Paint the caret as a REVERSED block cell. Worth turning on for a
+     * field inside a plugin panel: no hardware cursor is parked there, so
+     * without it a focused box shows nothing that says where you are. */
+    blockCaret?: boolean;
   } = {},
 ): WidgetSpec {
   return text({
@@ -1100,6 +1115,12 @@ export function popup(
      * from (host resolves the final rect: below the anchor, flipping
      * above near the frame edge, clamped on screen). */
     anchor?: [number, number];
+    /** Which edge of the anchor to line up with: "start" | "center" |
+     * "end". Naming it also makes the popup drop *below* its anchor
+     * instead of covering it — which is what a menu hanging off a row
+     * wants. Omitted, the popup sits on the anchor's own row at the
+     * panel's left edge. */
+    align?: "start" | "center" | "end";
     /** Escape the panel's clipping and paint at screen level (what
      * the dropdown pop-over does). Default: panel-clipped. */
     screenSpace?: boolean;
@@ -1110,6 +1131,7 @@ export function popup(
     child,
     key: options?.key,
     anchor: options?.anchor,
+    align: options?.align,
     screenSpace: options?.screenSpace ?? false,
   };
 }

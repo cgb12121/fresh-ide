@@ -2173,6 +2173,7 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
             child,
             key,
             anchor,
+            align,
             screen_space,
         } => {
             let k = match key.as_deref() {
@@ -2186,14 +2187,48 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
             // says how far inside. Which is also the difference `screen_space`
             // names: both are positioned in the panel's space, and only one is
             // *confined* to it.
-            let l = fresh_ui::layer()
-                .place(fresh_ui::Place::Over)
-                .fit(fresh_ui::Fit::CLAMP);
-            let l = match anchor {
-                Some([r, c]) => l
+            //
+            // An anchored popup drops *below* its anchor. `Place::Over` would
+            // put it on the anchor's own row, which for a menu is the row it
+            // belongs to — so it covered the very text it describes, and the
+            // rows it did not cover kept their own values showing through
+            // beside it. Dropping below is what a menu hanging off a row is
+            // supposed to look like.
+            //
+            // An unanchored popup has no cell to drop from and keeps sitting on
+            // its own slot, which is what "anchors at the popup's own position
+            // in the tree" means.
+            let l = fresh_ui::layer().fit(fresh_ui::Fit::CLAMP);
+            // An alignment says which edge of the anchor to line up with, and
+            // saying it is what makes this a drop rather than a cover: a menu
+            // aligned to something wants to sit next to it, not on it. Left to
+            // itself the layer keeps `anchor.x`, which is the left edge of a
+            // full-width slot — the panel's border.
+            let align = match align.as_deref() {
+                Some("start") => Some(fresh_ui::Align::Start),
+                Some("center") => Some(fresh_ui::Align::Center),
+                Some("end") => Some(fresh_ui::Align::End),
+                // An unrecognised word is not a placement: say so by falling
+                // through to the layer's own answer rather than guessing.
+                _ => None,
+            };
+            let l = match (align, anchor) {
+                (Some(a), Some([r, c])) => l
+                    .place(fresh_ui::Place::Below)
+                    .align(a)
                     .anchor(fresh_ui::Anchor::Node(super::panel::body_key()))
                     .offset(*c as i16, *r as i16),
-                None => l.anchor(fresh_ui::Anchor::Node(k)),
+                (Some(a), None) => l
+                    .place(fresh_ui::Place::Below)
+                    .align(a)
+                    .anchor(fresh_ui::Anchor::Node(k)),
+                (None, Some([r, c])) => l
+                    .place(fresh_ui::Place::Below)
+                    .anchor(fresh_ui::Anchor::Node(super::panel::body_key()))
+                    .offset(*c as i16, *r as i16),
+                (None, None) => l
+                    .place(fresh_ui::Place::Over)
+                    .anchor(fresh_ui::Anchor::Node(k)),
             };
             let l = match screen_space {
                 true => l,
@@ -2356,6 +2391,7 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
             hover_style,
             focusable,
             style,
+            context_menu,
             ..
         } => {
             let key = key.as_deref();
@@ -2397,12 +2433,27 @@ fn node_body(spec: &WidgetSpec, width: u16, cx: &Ctx<'_>, site: Site) -> Node<Ui
                     n,
                     cx.slot,
                     crate::widgets::WidgetEvent {
+                        // A right press on a button that DECLARED a menu is that button's, and
+                        // the host opens the menu: no plugin round-trip
+                        // inside the press that asked for it, which is the
+                        // one way to open a menu that can end up re-entering
+                        // the renderer. A button that declared none claims
+                        // nothing — the press reaches the surface behind it,
+                        // which is where a right press with no menu under it
+                        // has always gone.
                         row_target: false,
-                        context_click: false,
+                        context_click: context_menu.is_some(),
                         drag_source: false,
                         widget_key: key.unwrap_or("").to_string(),
                         widget_kind: "button",
-                        payload: serde_json::json!({}),
+                        // The menu itself, when there is one. Omitted
+                        // otherwise, so an ordinary button's payload is
+                        // still `{}` — the right-press arm reads this key,
+                        // and every button press pays for carrying it.
+                        payload: match context_menu {
+                            Some(items) => serde_json::json!({ "context_menu": items }),
+                            None => serde_json::json!({}),
+                        },
                         event_type: "activate",
                         owner_key: None,
                     },
@@ -4414,6 +4465,32 @@ fn hit_node(
             // right press with no widget under it has always gone.
             fresh_ui::MouseButton::Right if hit.context_click => {
                 e.stop();
+                // **A button that declared its own menu gets it natively.**
+                // The labels are in the payload the button kind put there, so
+                // the host opens the menu at the press's own cell and the
+                // plugin is not asked anything — no round-trip inside the
+                // press, which is the one way to open a menu that can end up
+                // re-entering the renderer. A button without one falls
+                // through to the plugin's `context` event, unchanged.
+                if let Some(items) = hit
+                    .payload
+                    .get("context_menu")
+                    .and_then(|v| v.as_array())
+                    .filter(|a| !a.is_empty())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                {
+                    return Some(UiMsg::Ui(super::msg::UiFact::OpenPluginContextMenu {
+                        slot,
+                        widget_key: hit.owner().to_string(),
+                        x: e.pos.x.max(0) as u16,
+                        y: e.pos.y.max(0) as u16,
+                        items,
+                    }));
+                }
                 Some(UiMsg::Ui(super::msg::UiFact::WidgetContext {
                     slot,
                     event: hit.clone(),
@@ -4736,10 +4813,20 @@ pub fn focus_places_cursor(spec: &WidgetSpec, focus_key: &str) -> bool {
 
 /// Whether a surface's caret marker places the hardware cursor: the surface
 /// owns the keyboard, and it is one whose field takes a terminal caret — a
-/// pane's panel, the dock's, the floating panel's. The settings surfaces and
-/// the prompt's toolbar draw their carets as a reversed cell instead.
+/// pane's panel, the dock's, the floating panel's, and a sidebar section's.
+/// The settings surfaces and the prompt's toolbar draw their carets as a
+/// reversed cell instead.
+///
+/// The sidebar is here for the same reason as the dock: it is a surface a
+/// plugin can own the keyboard on, and a field in one that did not place the
+/// caret had only the reversed cell to say where it was — which reads as an
+/// empty box with no cursor in it, and made clicking the field look broken.
 fn places_cursor(cx: &Ctx<'_>) -> bool {
-    cx.keyboard && matches!(cx.slot, Slot::Pane(_) | Slot::Dock | Slot::Floating)
+    cx.keyboard
+        && matches!(
+            cx.slot,
+            Slot::Pane(_) | Slot::Dock | Slot::Floating | Slot::Sidebar(_)
+        )
 }
 
 /// The key of the caret's cell, for the readers that anchor to it.
@@ -5273,6 +5360,7 @@ pub(crate) mod tests {
             full_width: false,
             hover_style: None,
             style: None,
+            context_menu: None,
         }
     }
 
@@ -5983,9 +6071,10 @@ pub(crate) mod tests {
         assert_eq!((x, y), (8, 2), "the screen cell, not the widget's own");
     }
 
-    /// And a widget that declared no context menu leaves the press alone, so
-    /// it reaches the surface behind — which is where a right press with no
-    /// widget under it has always gone.
+    /// And a button that declared no menu claims nothing, so the press
+    /// reaches the surface behind — which is where a right press with no menu
+    /// under it has always gone. A button is an affordance, not a menu host,
+    /// until it says it is one.
     #[test]
     fn a_right_press_on_a_button_is_left_to_the_surface_behind_it() {
         let mut ui: Ui<UiMsg> = Ui::new();
@@ -6004,7 +6093,57 @@ pub(crate) mod tests {
             !msgs
                 .iter()
                 .any(|m| matches!(m, UiMsg::Ui(UiFact::WidgetContext { .. }))),
-            "a button raises no menu: {msgs:?}"
+            "a button with no menu raises nothing: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| matches!(
+                m,
+                UiMsg::Ui(UiFact::OpenPluginContextMenu { .. })
+            )),
+            "and opens no menu: {msgs:?}"
+        );
+    }
+
+    /// **And a button that declared a menu gets the native one.** The labels
+    /// are read off the button's own hit — the press is answered by the host,
+    /// with no plugin round-trip inside the press that asked for it.
+    #[test]
+    fn a_declared_menu_opens_the_native_menu_at_the_press() {
+        let mut spec = button("Go", Some("go"), false, false);
+        if let WidgetSpec::Button { context_menu, .. } = &mut spec {
+            *context_menu = Some(vec!["Open File".to_string(), "Stage Changes".to_string()]);
+        }
+        let mut ui: Ui<UiMsg> = Ui::new();
+        ui.frame(node(&spec, WIDTH, &cx()), Size::new(WIDTH, 24));
+        let msgs = ui
+            .dispatch(fresh_ui::Input::press(
+                fresh_ui::Point::new(2, 0),
+                fresh_ui::MouseButton::Right,
+                fresh_ui::Mods::NONE,
+            ))
+            .msgs;
+        let opened = msgs
+            .iter()
+            .find_map(|m| match m {
+                UiMsg::Ui(UiFact::OpenPluginContextMenu {
+                    widget_key,
+                    x,
+                    y,
+                    items,
+                    ..
+                }) => Some((widget_key, *x, *y, items)),
+                _ => None,
+            })
+            .expect("a declared menu opens natively");
+        assert_eq!(opened.0, "go", "naming the button it was opened from");
+        assert_eq!((opened.1, opened.2), (2, 0), "at the press's own cell");
+        assert_eq!(opened.3, &["Open File".to_string(), "Stage Changes".to_string()]);
+        assert!(
+            !msgs.iter().any(|m| matches!(
+                m,
+                UiMsg::Ui(UiFact::WidgetContext { .. })
+            )),
+            "and the plugin is not asked to open it: {msgs:?}"
         );
     }
 
@@ -6424,6 +6563,7 @@ pub(crate) mod tests {
             full_width: false,
             hover_style: None,
             style: None,
+            context_menu: None,
         };
         let spec = WidgetSpec::Col {
             children: vec![

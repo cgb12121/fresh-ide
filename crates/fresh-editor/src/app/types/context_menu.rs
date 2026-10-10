@@ -13,6 +13,12 @@ pub const TAB_CONTEXT_MENU_WIDTH: u16 = 28;
 /// Width of the close-split confirmation popup (fits "Close split" + padding).
 pub const CLOSE_SPLIT_MENU_WIDTH: u16 = 16;
 
+/// Width of a plugin-declared context menu. Sized for the longest label a
+/// git-style row menu needs ("Open Staged Diff", "Discard Changes") with the
+/// menu's own padding; a plugin with longer words should say so rather than
+/// have them truncated.
+pub const PLUGIN_CONTEXT_MENU_WIDTH: u16 = 28;
+
 /// Shared geometry + navigation + hit-testing core for the native context
 /// menus.
 ///
@@ -92,6 +98,12 @@ pub enum ContextMenuKind {
     FileExplorer,
     /// The close-split confirmation popup (clicking the split's `×` button).
     CloseSplit,
+    /// A menu a plugin declared on the button that was right-pressed.
+    ///
+    /// The plugin owns the labels and what choosing one means; the host owns
+    /// the box, its position, its navigation and its dismissal — the same
+    /// three things every other menu here gets from [`ContextMenu`].
+    Plugin,
 }
 
 /// Tab context menu items
@@ -372,6 +384,58 @@ impl FileExplorerContextMenuItem {
             Self::CopyFullPath => t!("explorer.context.copy_full_path").to_string(),
             Self::CopyRelativePath => t!("explorer.context.copy_relative_path").to_string(),
         }
+    }
+}
+
+/// State for a context menu a plugin declared on a button.
+///
+/// The plugin declares the item labels in the spec, so they arrive already
+/// final: no enum, no `label()` match, nothing to translate. What the
+/// plugin does *not* know is where the menu sits, how wide it is, or which
+/// item is highlighted — and those are exactly the parts [`ContextMenu`]
+/// owns for every other menu here.
+#[derive(Debug, Clone)]
+pub struct PluginContextMenu {
+    /// The panel the menu was opened from, so the choice can be reported back
+    /// to the plugin that declared the items.
+    pub panel_key: crate::widgets::PanelKey,
+    /// The button the menu was opened from, carried through so the plugin can
+    /// tell which row it was asked about when an item is chosen.
+    pub widget_key: String,
+    /// Item labels in display order, as the plugin declared them.
+    pub items: Vec<String>,
+    /// Shared geometry + navigation core (position, highlight, width, items).
+    pub menu: ContextMenu,
+}
+
+impl PluginContextMenu {
+    /// Anchor a plugin-declared menu at the given screen position.
+    pub fn new(
+        panel_key: crate::widgets::PanelKey,
+        widget_key: String,
+        x: u16,
+        y: u16,
+        items: Vec<String>,
+    ) -> Self {
+        Self {
+            panel_key,
+            widget_key,
+            menu: ContextMenu::new(x, y, PLUGIN_CONTEXT_MENU_WIDTH, items.len()),
+            items,
+        }
+    }
+
+    /// The items this menu presents, in display order.
+    pub fn items(&self) -> &[String] {
+        &self.items
+    }
+
+    /// Get the currently highlighted item.
+    pub fn highlighted_item(&self) -> String {
+        self.items
+            .get(self.menu.highlighted)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 

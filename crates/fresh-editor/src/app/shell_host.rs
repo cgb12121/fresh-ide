@@ -2956,6 +2956,30 @@ impl Editor {
                     }
                 }
             }
+            UiFact::OpenPluginContextMenu {
+                slot,
+                widget_key,
+                x,
+                y,
+                items,
+            } => {
+                use crate::view::shell::widgets::Slot;
+                let panel = match slot {
+                    Slot::Dock => crate::app::PanelSlot::Dock,
+                    Slot::Floating => crate::app::PanelSlot::Floating,
+                    Slot::Sidebar(i) => crate::app::PanelSlot::Sidebar(i),
+                    // The settings dialog's rows raise no plugin menu.
+                    _ => return,
+                };
+                let panel_key = match self.panel(panel) {
+                    Some(f) => f.panel_key.clone(),
+                    None => return,
+                };
+                self.active_window_mut().plugin_context_menu =
+                    Some(crate::app::types::PluginContextMenu::new(
+                        panel_key, widget_key, x, y, items,
+                    ));
+            }
             UiFact::ActivateContextMenuItem(idx) => {
                 // The same two steps the old click handler took: move the
                 // highlight, then activate through the path Enter uses.

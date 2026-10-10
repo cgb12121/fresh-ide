@@ -22,9 +22,22 @@ impl WidgetImpl for Button {
         // Disabled buttons don't fire activate. The renderer already
         // excludes them from the tab cycle; a focus key still pointing
         // at one is a stale-focus race — drop the key.
-        if let WidgetSpec::Button { disabled, .. } = spec {
+        if let WidgetSpec::Button {
+            disabled,
+            context_menu,
+            ..
+        } = spec
+        {
             if !disabled {
-                fx.events.push(("activate".into(), serde_json::json!({})));
+                fx.events.push((
+                    "activate".into(),
+                    // The menu a right press opens, when the button declared
+                    // one. It rides the `activate` payload because the
+                    // right-press arm reads that same payload: a button that
+                    // carries a menu is a button whose press means something
+                    // other than "activate me".
+                    serde_json::json!({ "context_menu": context_menu }),
+                ));
             }
         }
         super::KeyDisposition::Consumed

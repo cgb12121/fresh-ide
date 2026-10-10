@@ -1037,6 +1037,7 @@ mod tests {
                     full_width: false,
                     hover_style: None,
                     style: None,
+                    context_menu: None,
                 },
             ],
             key: None,

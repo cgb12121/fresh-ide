@@ -12,13 +12,9 @@ import {
   col,
   divider,
   flexSpacer,
-  hintBar,
   label,
-  labeledSection,
   row,
   spacer,
-  styledRow,
-  text,
   textArea,
   type WidgetSpec,
   type WidgetEvt,
@@ -43,7 +39,6 @@ import {
   MAX_CHANGED_LINES_FOR_PATCH,
   type GitStatusSummary,
   type GitGraphLine,
-  type GitFileChange,
 } from "./lib/git_control.ts";
 import { getViewRegistry } from "./lib/view_registry.ts";
 
@@ -426,16 +421,171 @@ function getChangePathStyle(status: string): StyledSegment["style"] {
 }
 
 /**
+ * Shorten a repo-relative path from the LEFT, keeping the filename intact.
+ *
+ * A monorepo path is mostly directory prefix nobody scans for
+ * (`BE/webhook-delivery-service/src/main/java/com/paymenow/...`), and the tail
+ * is the part that identifies the file. The panel is also narrow: without a
+ * cap, a long path pushes the `-`/`+`/`↺` buttons past the sidebar edge, which
+ * is how the actions stopped being clickable at all.
+ */
+function shortenPath(path: string, max = 38): string {
+  if (path.length <= max) return path;
+  const parts = path.split("/");
+  const file = parts.pop() ?? "";
+  const dir = parts.join("/");
+  // Budget for the elided marker plus the separator.
+  const keep = max - file.length - 2;
+  if (keep <= 4) {
+    return `…/${file.slice(Math.max(0, file.length - (max - 2)))}`;
+  }
+  return `…${dir.slice(Math.max(0, dir.length - keep))}/${file}`;
+}
+
+/**
  * Builds the widget spec tree for the Git Control Panel.
  */
+/**
+ * What a right press landed on: a changed file and where it sits, or a
+ * commit in the graph.
+ *
+ * The row's buttons all name the same file in different keys, so the menu is
+ * built from whichever one was pressed rather than from a second piece of
+ * state kept in step with them.
+ */
+type ContextTarget =
+  | { kind: "file"; path: string; staged: boolean }
+  | { kind: "commit"; hash: string };
+
+function contextTargetOf(key: string): ContextTarget | null {
+  if (key.startsWith("git_preview_file:")) {
+    const rest = key.slice("git_preview_file:".length);
+    const sep = rest.indexOf(":");
+    if (sep < 0) return null;
+    return {
+      kind: "file",
+      staged: rest.slice(0, sep) === "staged",
+      path: rest.slice(sep + 1),
+    };
+  }
+  for (const prefix of ["git_open_file:", "git_stage:", "git_unstage:", "git_discard:"]) {
+    if (key.startsWith(prefix)) {
+      return { kind: "file", staged: false, path: key.slice(prefix.length) };
+    }
+  }
+  if (key.startsWith("git_commit:")) {
+    return { kind: "commit", hash: key.slice("git_commit:".length) };
+  }
+  return null;
+}
+
+/** `git_open_file:` and friends carry no side of the diff, so read it back
+ *  from the status the panel already holds. */
+function isStagedPath(path: string): boolean {
+  return statusSummary?.staged.some((c) => c.path === path) ?? false;
+}
+
+/**
+ * The menu a right press on this row opens.
+ *
+ * Declared on the button rather than built by the plugin: the host opens it
+ * at the press's own cell, with the same geometry, ↑/↓ navigation and
+ * outside-dismiss the file explorer's menu has, and the plugin is not asked
+ * anything until an item is chosen. A plugin round-trip to open a menu is a
+ * round-trip inside the press that asked for it — which is the one way to
+ * open a menu that can end up re-entering the renderer.
+ */
+function contextMenuFor(target: ContextTarget): string[] {
+  if (target.kind === "commit") {
+    return [`Copy hash ${target.hash.slice(0, 8)}`];
+  }
+  const staged = target.staged || isStagedPath(target.path);
+  const items = ["Open File", staged ? "Open Staged Diff" : "Open Changes"];
+  if (staged) {
+    items.push("Unstage Changes");
+  } else {
+    items.push("Stage Changes", "Discard Changes");
+  }
+  return items;
+}
+
+/** Run what the native menu offered. The host names the button the menu was
+ *  opened from and the label chosen, so the plugin matches on both. */
+async function runContextMenuChoice(key: string, label: string): Promise<void> {
+  const target = contextTargetOf(key);
+  if (!target) return;
+
+  if (target.kind === "commit") {
+    if (label.startsWith("Copy hash")) {
+      editor.copyToClipboard(target.hash);
+      statusFeedback = `Copied ${target.hash.slice(0, 8)}`;
+      updatePanel();
+    }
+    return;
+  }
+
+  const path = target.path;
+  const staged = target.staged || isStagedPath(path);
+  switch (label) {
+    case "Open File": {
+      const repoRoot = statusSummary?.repoRoot;
+      if (repoRoot && path) editor.openFile(`${repoRoot}/${path}`);
+      return;
+    }
+    case "Open Staged Diff":
+    case "Open Changes":
+      await previewChangedFile(path, staged);
+      return;
+    case "Stage Changes":
+      await stageFile(editor, path);
+      break;
+    case "Unstage Changes":
+      await unstageFile(editor, path);
+      break;
+    case "Discard Changes":
+      await discardFile(
+        editor,
+        path,
+        statusSummary?.unstaged.find((c) => c.path === path)?.status === "untracked"
+      );
+      break;
+    default:
+      return;
+  }
+  statusFeedback = "";
+  await refreshGitStatusData();
+}
+
+/** Tail-elide a commit subject. Not `shortenPath`: a subject has no
+ *  separators to keep the tail of, and it wants the beginning — that is the
+ *  part a commit is identified by. */
+function shortenSubject(subject: string, max = 30): string {
+  return subject.length <= max ? subject : `${subject.slice(0, max - 1)}…`;
+}
+
 export function buildGitPanelSpec(): WidgetSpec {
   const children: WidgetSpec[] = [];
+
+  /** Which panel row each child starts on.
+   *
+   * The host reads a popup's `anchor` as `[row, col]` in panel-inner
+   * coordinates, and an unanchored popup anchors to its own slot — which
+   * spans the panel, so the menu pinned itself to the sidebar's left edge
+   * and the neighbouring text painted over it. The spec is a flat column
+   * built here, so its row count is a running total rather than a
+   * measurement to be asked of the layout.
+   */
+  let rowCursor = 0;
+  const push = (spec: WidgetSpec, rows = 1): void => {
+    children.push(spec);
+    rowCursor += rows;
+  };
 
   // 1. Top status line: Branch & toolbar buttons
   const branchName = statusSummary
     ? `${statusSummary.branch}${statusSummary.upstream ? ` ⇄ ${statusSummary.upstream} ↑${statusSummary.ahead} ↓${statusSummary.behind}` : " · no upstream"}`
     : "no-repo";
-  children.push(
+  push(
     row(
       label(`\u{f126} ${branchName}`, { style: { bold: true, fg: "syntax.keyword" } }),
       flexSpacer(),
@@ -461,10 +611,10 @@ export function buildGitPanelSpec(): WidgetSpec {
     )
   );
 
-  children.push(divider({ ch: "─" }));
+  push(divider({ ch: "─" }));
 
   // 2. Commit message input box and Commit button
-  children.push(
+  push(
     row(
       textArea({
         value: commitText,
@@ -474,26 +624,27 @@ export function buildGitPanelSpec(): WidgetSpec {
         rows: 4,
         maxRows: 6,
       })
-    )
+    ),
+    4
   );
-  children.push(row(flexSpacer(), button("Commit", {
+  push(row(flexSpacer(), button("Commit", {
     key: "git_commit_btn",
     intent: "primary",
   })));
 
   if (statusFeedback) {
-    children.push(
+    push(
       label(statusFeedback, { style: { fg: "diagnostic.error_fg" } })
     );
   }
 
-  children.push(divider({ ch: "─" }));
+  push(divider({ ch: "─" }));
 
   // 3. Staged Changes Section
   const stagedCount = statusSummary?.staged.length ?? 0;
   const stagedHeader = `${isStagedCollapsed ? "▶" : "▼"} STAGED CHANGES (${stagedCount})`;
   if (stagedCount > 0) {
-    children.push(row(button(stagedHeader, {
+    push(row(button(stagedHeader, {
       key: "git_toggle_staged",
       bare: true,
       style: { bold: true, fg: "ui.file_status_added_fg" },
@@ -502,15 +653,26 @@ export function buildGitPanelSpec(): WidgetSpec {
     if (!isStagedCollapsed) {
       for (const item of statusSummary!.staged) {
         const badge = getStatusBadgeStyle(item.status);
-        children.push(
+        const path = shortenPath(item.path);
+        // Right at the end of the name: no trailing space, because the menu
+        // drops from this cell and one column of slack showed the panel's own
+        // text in the gutter beside it.
+        push(
           row(
             label(badge.text, { style: badge.style }),
-            button(item.path, {
+            // Not `fullWidth`: a stretching label outgrows the sidebar and
+            // pushes the action buttons off the edge, where they render but
+            // cannot be hit. The spacer below already does the pushing.
+            button(path, {
               key: `git_preview_file:staged:${item.path}`,
               bare: true,
-              fullWidth: true,
               style: getChangePathStyle(item.status),
               hoverStyle: { fg: "syntax.function", underline: true, bold: true },
+              contextMenu: contextMenuFor({
+                kind: "file",
+                staged: true,
+                path: item.path,
+              }),
             }),
             flexSpacer(),
             button("-", {
@@ -528,7 +690,7 @@ export function buildGitPanelSpec(): WidgetSpec {
   const unstagedCount = statusSummary?.unstaged.length ?? 0;
   const unstagedHeader = `${isUnstagedCollapsed ? "▶" : "▼"} CHANGES (${unstagedCount})`;
   if (unstagedCount > 0) {
-    children.push(row(button(unstagedHeader, {
+    push(row(button(unstagedHeader, {
       key: "git_toggle_unstaged",
       bare: true,
       style: { bold: true, fg: "ui.file_status_modified_fg" },
@@ -537,15 +699,20 @@ export function buildGitPanelSpec(): WidgetSpec {
   if (!isUnstagedCollapsed) {
       for (const item of statusSummary!.unstaged) {
         const badge = getStatusBadgeStyle(item.status);
-        children.push(
+        const path = shortenPath(item.path);
+        push(
           row(
             label(badge.text, { style: badge.style }),
-            button(item.path, {
+            button(path, {
               key: `git_preview_file:unstaged:${item.path}`,
               bare: true,
-              fullWidth: true,
               style: getChangePathStyle(item.status),
               hoverStyle: { fg: "syntax.function", underline: true, bold: true },
+              contextMenu: contextMenuFor({
+                kind: "file",
+                staged: false,
+                path: item.path,
+              }),
             }),
             flexSpacer(),
             button("+", {
@@ -565,11 +732,11 @@ export function buildGitPanelSpec(): WidgetSpec {
     }
   }
 
-  if (stagedCount > 0 || unstagedCount > 0) children.push(divider({ ch: "─" }));
+  if (stagedCount > 0 || unstagedCount > 0) push(divider({ ch: "─" }));
 
   // 5. Git Graph Section (Lower Half)
   const graphHeader = `${isGraphCollapsed ? "▶" : "▼"} GIT GRAPH`;
-  children.push(
+  push(
     row(
       button(graphHeader, {
         key: "git_toggle_graph",
@@ -581,19 +748,23 @@ export function buildGitPanelSpec(): WidgetSpec {
 
   if (!isGraphCollapsed) {
     if (graphLines.length === 0) {
-      children.push(
+      push(
         label("  (no graph commits)", { style: { fg: "editor.line_number_fg" } })
       );
     } else {
       for (const g of graphLines) {
-        children.push(
+        // The graph string is the first cell, then a space, the 7-char hash,
+        // then a space — so the menu hangs off the end of the subject.
+        const subject = shortenSubject(g.subject);
+                push(
           row(
             label(g.graph, { style: { fg: "syntax.string", bold: true } }),
             spacer(1),
             label(g.hash ? g.hash.slice(0, 7) : "", { style: { fg: "syntax.number" } }),
             spacer(1),
-            button(g.subject, { key: `git_commit:${g.hash}`, bare: true, fullWidth: true,
-              style: { fg: "syntax.string" }, hoverStyle: { fg: "syntax.function", underline: true, bold: true } })
+            button(subject, { key: `git_commit:${g.hash}`, bare: true, fullWidth: true,
+              style: { fg: "syntax.string" }, hoverStyle: { fg: "syntax.function", underline: true, bold: true },
+              contextMenu: contextMenuFor({ kind: "commit", hash: g.hash }) })
           )
         );
       }
@@ -652,6 +823,16 @@ editor.on("widget_event", async (event: WidgetEvt) => {
   // Commit text input change
   if (key === "git_commit_msg" && event.event_type === "change") {
     commitText = String((event.payload as { value?: unknown })?.value ?? "");
+    return;
+  }
+
+  // **A right press on a button that declared a menu.** The host opened the
+  // menu itself — geometry, navigation and dismissal — and names the button
+  // it was opened from plus the label chosen. It is not an `activate`, so it
+  // has to be answered before the filter below.
+  if (event.event_type === "plugin_menu") {
+    const label = String((event.payload as { label?: unknown })?.label ?? "");
+    await runContextMenuChoice(key, label);
     return;
   }
 
@@ -729,6 +910,18 @@ editor.on("widget_event", async (event: WidgetEvt) => {
     const pathSeparator = selection.indexOf(":");
     const path = pathSeparator >= 0 ? selection.slice(pathSeparator + 1) : selection;
     await previewChangedFile(path, selection.startsWith("staged:"));
+    return;
+  }
+
+  if (key.startsWith("git_open_file:")) {
+    const path = key.slice("git_open_file:".length);
+    const repoRoot = statusSummary?.repoRoot;
+    if (repoRoot && path) {
+      // VS Code's "Open File" from the source-control context menu: the
+      // click itself stays on the diff, and an explicit button is what
+      // reaches the editor.
+      editor.openFile(`${repoRoot}/${path}`);
+    }
     return;
   }
 

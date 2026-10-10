@@ -1889,6 +1889,17 @@ type WidgetSpec = {
 	*/
 	fullWidth: boolean;
 	/**
+	 * The menu a right press on this button opens, as item labels in
+	 * display order. `null` and omitted are the same thing: the press
+	 * raises the plugin's `context` `widget_event` instead.
+	 *
+	 * Declaring the items is what makes the menu native — the host opens
+	 * it at the press's own cell, with the same geometry, ↑/↓ navigation
+	 * and outside-dismiss the file explorer's menu has, and the plugin is
+	 * not asked anything until an item is chosen.
+	*/
+	contextMenu?: Array<string> | null;
+	/**
 	* Style applied while the pointer is over this button. `None`
 	* (the default) leaves it looking the same hovered as not.
 	*
@@ -2359,6 +2370,14 @@ type WidgetSpec = {
 	* own position in the tree.
 	*/
 	anchor?: [number, number] | null;
+	/**
+	 * Which edge of the anchor the popup lines up with on the axis it
+	 * does not use: `"start"`, `"center"` or `"end"`. `null` keeps the
+	 * layer's own left edge — for a popup inside a panel, that is the
+	 * panel's left border. Naming it also makes the popup drop *below*
+	 * its anchor instead of covering the anchor's row.
+	*/
+	align?: "start" | "center" | "end" | null;
 	/**
 	* When true, the popup escapes the panel's clipping and is
 	* painted at screen level (what the dropdown pop-over does);

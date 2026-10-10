@@ -489,6 +489,7 @@ fn text_list_row(field_key: &str, row: Option<usize>, value: &str) -> WidgetSpec
             bare: true,
             full_width: false,
             hover_style: None,
+            context_menu: None,
             style: Some(OverlayOptions {
                 fg: Some(OverlayColorSpec::theme_key(REMOVE_FG)),
                 ..Default::default()

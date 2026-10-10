@@ -1140,6 +1140,7 @@ mod tests {
                     full_width: false,
                     hover_style: None,
                     style: None,
+                    context_menu: None,
                 }],
                 key: None,
             }),
@@ -1487,6 +1488,7 @@ mod tests {
             full_width: true,
             hover_style: None,
             style: None,
+            context_menu: None,
         };
         let spec = WidgetSpec::Col {
             children: vec![
@@ -1652,6 +1654,7 @@ mod tests {
             full_width: false,
             hover_style: None,
             style: None,
+            context_menu: None,
         };
         let p = panel(
             Spot::Centered { width_pct: 60 },

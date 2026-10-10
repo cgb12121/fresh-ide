@@ -64,6 +64,34 @@ impl Editor {
                     self.execute_close_split_menu_action(item, split_id);
                 }
             }
+            // A plugin-declared menu: the host owns the box, the plugin owns
+            // the meaning. The button the menu was opened from and the chosen
+            // label cross the bridge as an ordinary `widget_event` — the one
+            // channel a plugin already has.
+            ContextMenuKind::Plugin => {
+                // **Everything the choice needs is read BEFORE the menu
+                // closes.** `close_context_menus` drops the field the panel
+                // lives in, so asking for it afterwards — as this once did —
+                // answers `None` and the choice goes nowhere: the menu
+                // highlights, Enter does nothing, and nothing says why.
+                let chosen = self.active_window().plugin_context_menu.as_ref().map(|m| {
+                    (
+                        m.panel_key.clone(),
+                        m.widget_key.clone(),
+                        m.highlighted_item(),
+                    )
+                });
+                self.active_window_mut().close_context_menus();
+                if let Some((panel_key, widget_key, label)) = chosen {
+                    self.fire_widget_event(
+                        &panel_key,
+                        widget_key,
+                        "plugin_menu".to_string(),
+                        serde_json::json!({ "label": label }),
+                    );
+                }
+                return Ok(());
+            }
         }
         Ok(())
     }

@@ -236,7 +236,26 @@ pub enum UiFact {
     HighlightContextMenuItem(usize),
     /// Activate a row — the same path a keyboard Enter takes.
     ActivateContextMenuItem(usize),
-    /// Move the highlight one row up or down.
+    /// Open the context menu a plugin declared on the button that was
+    /// right-pressed, at the press's own cell.
+    ///
+    /// The plugin declared the items in the spec, so the host has everything
+    /// it needs and asks nothing: the menu is native, positioned and
+    /// navigated like every other one here, and the plugin hears about it
+    /// only when an item is chosen.
+    OpenPluginContextMenu {
+        /// The slot whose button was pressed, resolved to a panel where the
+        /// fact is handled — a description cannot name a panel, only a slot.
+        slot: super::widgets::Slot,
+        /// The button the menu was opened from, carried through to the choice.
+        widget_key: String,
+        /// Screen cell of the press, before edge-clamping.
+        x: u16,
+        y: u16,
+        /// Item labels in display order.
+        items: Vec<String>,
+    },
+        /// Move the highlight one row up or down.
     StepContextMenu(MenuStep),
 
     // -- pointer position ----------------------------------------------------

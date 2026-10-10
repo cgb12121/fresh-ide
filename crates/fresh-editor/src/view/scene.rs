@@ -1742,6 +1742,7 @@ impl Editor {
             ContextMenuKind::NewTab => "newTab",
             ContextMenuKind::Tab => "tab",
             ContextMenuKind::CloseSplit => "closeSplit",
+            ContextMenuKind::Plugin => "plugin",
         };
         Some(ContextMenuView {
             kind,

@@ -1666,6 +1666,7 @@ mod tests {
             full_width: false,
             hover_style: None,
             style: None,
+            context_menu: None,
         };
         let p = crate::view::shell::panel::Panel {
             spot: crate::view::shell::panel::Spot::Centered { width_pct: 60 },
