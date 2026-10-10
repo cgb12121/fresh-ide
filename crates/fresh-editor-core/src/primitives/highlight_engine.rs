@@ -302,6 +302,11 @@ pub struct TextMateEngine {
     // Body scope of this syntax's tables (see `TABLE_SPECS`); `None` for
     // every syntax that doesn't scope them.
     table_body_scope: Option<syntect::parsing::Scope>,
+    // **Whether this syntax is markdown, and therefore prose.**
+    //
+    // Set once from the syntax name, for the same reason `table_body_scope`
+    // is: the decision it feeds has to be made where the name is known.
+    markdown_host: bool,
     // Fence-language-token → syntax index memo (None = unrecognized).
     embedded_syntax_memo: HashMap<String, Option<usize>>,
     // Reusable per-line span buffers for embedding hosts, so region
@@ -1016,6 +1021,7 @@ impl TextMateEngine {
             stats: HighlightStats::default(),
             embedding,
             table_body_scope,
+            markdown_host: syntax_name.eq_ignore_ascii_case("markdown"),
             embedded_syntax_memo: HashMap::new(),
             host_span_scratch: Vec::new(),
             child_span_scratch: Vec::new(),
@@ -1756,7 +1762,21 @@ impl TextMateEngine {
         // parse that makes scrolling free for Java is exactly wrong here. The
         // windowed path is cheap for these files precisely because a screenful
         // of prose holds few fences.
-        let cold_whole = cold && buf_len <= WHOLE_FILE_PARSE_BYTES && self.embedding.is_empty();
+        // **Markdown is excluded whether or not it hosts fences, and for a
+        // different reason: the grammar, not the size.** One 500-byte markdown
+        // LINE holding seven or more inline code spans (`a` `b` `c` ...) costs
+        // ~200ms to parse; the same bytes inside a fenced block cost 8ms,
+        // because a fence is read as code and never reaches the inline
+        // parser. Measured on a 15 KB sprint board: 658ms of syntax at open.
+        //
+        // The whole-file parse pays that for the WHOLE file at once, on open,
+        // whether or not any of it is on screen — and markdown's structure is
+        // line-scoped, so unlike code it loses nothing by being parsed a
+        // screenful at a time. The cost does not vanish: scrolling to the
+        // offending paragraph pays it then. It just stops being paid for
+        // paragraphs nobody scrolled to.
+        let cold_whole =
+            cold && buf_len <= WHOLE_FILE_PARSE_BYTES && self.embedding.is_empty() && !self.markdown_host;
         let (desired_parse_start, parse_end) = if cold_whole {
             (0, buf_len)
         } else if buf_len <= MAX_PARSE_BYTES {
