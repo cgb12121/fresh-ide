@@ -117,10 +117,19 @@ impl ExplorerTrailingSlotProvider for CompatibilityTrailingSlotProvider {
             context.decorations,
         );
 
+        let (name_color_hint, name_color_key) = match row_status.resolved {
+            Some(ResolvedExplorerStatus::Decoration(decoration))
+            | Some(ResolvedExplorerStatus::BubbledDecoration(decoration)) => (
+                Some(compatibility_decoration_color(decoration, context.theme)),
+                super::slots::overlay_color_key(&decoration.color),
+            ),
+            _ => (None, None),
+        };
+
         ExplorerTrailingSlotResolution {
             payload: row_status.compatibility_trailing_slot(context.theme, context.is_dir),
-            name_color_hint: None,
-            name_color_key: None,
+            name_color_hint,
+            name_color_key,
         }
     }
 }
@@ -146,8 +155,13 @@ impl FileExplorerDecorationCache {
         I: IntoIterator<Item = FileExplorerDecoration>,
     {
         let mut direct = HashMap::new();
+        let stripped_root = crate::services::terminal::manager::strip_verbatim_prefix(root);
         for decoration in decorations {
-            if !decoration.path.starts_with(root) {
+            let stripped_path = crate::services::terminal::manager::strip_verbatim_prefix(&decoration.path);
+            if !decoration.path.starts_with(root)
+                && !stripped_path.starts_with(stripped_root.as_ref())
+                && !decoration.path.starts_with(stripped_root.as_ref())
+            {
                 continue;
             }
             insert_with_aliases(
@@ -179,12 +193,60 @@ impl FileExplorerDecorationCache {
 
     /// Lookup a decoration for an exact path.
     pub fn direct_for_path(&self, path: &Path) -> Option<&FileExplorerDecoration> {
-        self.direct.get(path)
+        if let Some(dec) = self.direct.get(path) {
+            return Some(dec);
+        }
+        #[cfg(windows)]
+        {
+            let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+            if stripped.as_ref() != path {
+                if let Some(dec) = self.direct.get(stripped.as_ref()) {
+                    return Some(dec);
+                }
+            }
+            let s = path.to_string_lossy();
+            if s.contains('/') {
+                let backslashed = PathBuf::from(s.replace('/', "\\"));
+                if let Some(dec) = self.direct.get(&backslashed) {
+                    return Some(dec);
+                }
+            } else if s.contains('\\') {
+                let forward = PathBuf::from(s.replace('\\', "/"));
+                if let Some(dec) = self.direct.get(&forward) {
+                    return Some(dec);
+                }
+            }
+        }
+        None
     }
 
     /// Lookup a bubbled decoration for a path (direct or descendant).
     pub fn bubbled_for_path(&self, path: &Path) -> Option<&FileExplorerDecoration> {
-        self.bubbled.get(path)
+        if let Some(dec) = self.bubbled.get(path) {
+            return Some(dec);
+        }
+        #[cfg(windows)]
+        {
+            let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+            if stripped.as_ref() != path {
+                if let Some(dec) = self.bubbled.get(stripped.as_ref()) {
+                    return Some(dec);
+                }
+            }
+            let s = path.to_string_lossy();
+            if s.contains('/') {
+                let backslashed = PathBuf::from(s.replace('/', "\\"));
+                if let Some(dec) = self.bubbled.get(&backslashed) {
+                    return Some(dec);
+                }
+            } else if s.contains('\\') {
+                let forward = PathBuf::from(s.replace('\\', "/"));
+                if let Some(dec) = self.bubbled.get(&forward) {
+                    return Some(dec);
+                }
+            }
+        }
+        None
     }
 
     /// Direct decoration paths under `dir_path`, excluding `dir_path` itself.

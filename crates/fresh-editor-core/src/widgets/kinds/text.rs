@@ -176,6 +176,17 @@ impl WidgetImpl for Text {
                 // doesn't fall through to the buffer's copy path.
                 if let Some(text) = selected_text(widget_key, panel) {
                     fx.clipboard_copy = Some(text);
+                } else if is_read_only {
+                    if let Some(val) = panel.instance_states.get(widget_key).and_then(|st| match st {
+                        super::super::registry::WidgetInstanceState::Text { editor, .. } => {
+                            Some(editor.value())
+                        }
+                        _ => None,
+                    }) {
+                        if !val.is_empty() {
+                            fx.clipboard_copy = Some(val);
+                        }
+                    }
                 }
                 Consumed
             }
@@ -626,6 +637,42 @@ pub fn markdown_document(
     value: &str,
     md: Option<crate::widgets::MarkdownCtx<'_>>,
 ) -> TextPropertyEntry {
+    use std::cell::RefCell;
+    use std::hash::{Hash, Hasher};
+
+    #[derive(Clone)]
+    struct CachedDoc {
+        hash: u64,
+        theme_ptr: usize,
+        grammars_ptr: usize,
+        entry: TextPropertyEntry,
+    }
+
+    thread_local! {
+        static CACHE: RefCell<Vec<CachedDoc>> = const { RefCell::new(Vec::new()) };
+    }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    let h = hasher.finish();
+
+    let (theme_ptr, grammars_ptr) = match md {
+        Some(m) => (
+            m.theme as *const _ as usize,
+            m.grammars.map(|g| g as *const _ as usize).unwrap_or(0),
+        ),
+        None => (0, 0),
+    };
+
+    if let Some(hit) = CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|item| item.hash == h && item.theme_ptr == theme_ptr && item.grammars_ptr == grammars_ptr)
+            .map(|item| item.entry.clone())
+    }) {
+        return hit;
+    }
+
     use crate::markdown::parse_markdown;
     let lines = match md {
         Some(md) => parse_markdown(value, md.theme, md.grammars),
@@ -639,7 +686,22 @@ pub fn markdown_document(
             })
             .collect(),
     };
-    markdown_entry_from_lines(&lines)
+    let entry = markdown_entry_from_lines(&lines);
+
+    CACHE.with(|c| {
+        let mut list = c.borrow_mut();
+        if list.len() >= 16 {
+            list.remove(0);
+        }
+        list.push(CachedDoc {
+            hash: h,
+            theme_ptr,
+            grammars_ptr,
+            entry: entry.clone(),
+        });
+    });
+
+    entry
 }
 
 /// [`markdown_document`] with the parse already done: the assembly half, which

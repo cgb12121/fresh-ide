@@ -186,8 +186,13 @@ impl FileExplorerSlotOverrideCache {
         let mut direct_name_color = std::collections::HashMap::new();
         let mut inherited_name_color = std::collections::HashMap::new();
 
+        let stripped_root = crate::services::terminal::manager::strip_verbatim_prefix(root);
         for slot in slots {
-            if !slot.path.starts_with(root) {
+            let stripped_path = crate::services::terminal::manager::strip_verbatim_prefix(&slot.path);
+            if !slot.path.starts_with(root)
+                && !stripped_path.starts_with(stripped_root.as_ref())
+                && !slot.path.starts_with(stripped_root.as_ref())
+            {
                 continue;
             }
 
@@ -268,16 +273,85 @@ impl FileExplorerSlotOverrideCache {
     }
 
     fn leading_override_for_path(&self, path: &Path) -> Option<&CachedLeadingOverride> {
-        self.direct_leading.get(path)
+        if let Some(entry) = self.direct_leading.get(path) {
+            return Some(entry);
+        }
+        #[cfg(windows)]
+        {
+            let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+            if stripped.as_ref() != path {
+                if let Some(entry) = self.direct_leading.get(stripped.as_ref()) {
+                    return Some(entry);
+                }
+            }
+            let s = path.to_string_lossy();
+            if s.contains('/') {
+                let backslashed = std::path::PathBuf::from(s.replace('/', "\\"));
+                if let Some(entry) = self.direct_leading.get(&backslashed) {
+                    return Some(entry);
+                }
+            } else if s.contains('\\') {
+                let forward = std::path::PathBuf::from(s.replace('\\', "/"));
+                if let Some(entry) = self.direct_leading.get(&forward) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
     }
 
     fn trailing_override_for_path(&self, path: &Path) -> Option<&CachedTrailingOverride> {
-        self.direct_trailing.get(path)
+        if let Some(entry) = self.direct_trailing.get(path) {
+            return Some(entry);
+        }
+        #[cfg(windows)]
+        {
+            let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+            if stripped.as_ref() != path {
+                if let Some(entry) = self.direct_trailing.get(stripped.as_ref()) {
+                    return Some(entry);
+                }
+            }
+            let s = path.to_string_lossy();
+            if s.contains('/') {
+                let backslashed = std::path::PathBuf::from(s.replace('/', "\\"));
+                if let Some(entry) = self.direct_trailing.get(&backslashed) {
+                    return Some(entry);
+                }
+            } else if s.contains('\\') {
+                let forward = std::path::PathBuf::from(s.replace('\\', "/"));
+                if let Some(entry) = self.direct_trailing.get(&forward) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
     }
 
     fn name_color_override_for_path(&self, path: &Path) -> Option<&CachedNameColorOverride> {
         if let Some(direct) = self.direct_name_color.get(path) {
             return Some(direct);
+        }
+        #[cfg(windows)]
+        {
+            let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+            if stripped.as_ref() != path {
+                if let Some(direct) = self.direct_name_color.get(stripped.as_ref()) {
+                    return Some(direct);
+                }
+            }
+            let s = path.to_string_lossy();
+            if s.contains('/') {
+                let backslashed = std::path::PathBuf::from(s.replace('/', "\\"));
+                if let Some(direct) = self.direct_name_color.get(&backslashed) {
+                    return Some(direct);
+                }
+            } else if s.contains('\\') {
+                let forward = std::path::PathBuf::from(s.replace('\\', "/"));
+                if let Some(direct) = self.direct_name_color.get(&forward) {
+                    return Some(direct);
+                }
+            }
         }
         // No entry for this exact path: an ancestor that opted into
         // `apply_to_children` colours it. This is the lookup that lets a plugin

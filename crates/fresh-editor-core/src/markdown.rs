@@ -353,16 +353,27 @@ fn highlight_code_to_styled_lines(
     code: &str,
     spans: &[HighlightSpan],
     theme: &crate::theme::Theme,
+    is_diff: bool,
 ) -> Vec<StyledLine> {
     let mut result = vec![StyledLine::new()];
     // Markdown is rendered into popup surfaces (LSP hover, signature help,
     // …). `help_key_fg` is the keybinding/heading accent — wrong role for
     // code body. Use the popup body color so the text reads against
     // `inline_code_bg` regardless of host terminal defaults. See issue #2033.
-    let plain = Style::default()
-        .theme_fg(theme, "ui.popup_text_fg")
-        .theme_bg(theme, "ui.inline_code_bg");
-    let code_bg = Style::default().theme_bg(theme, "ui.inline_code_bg");
+    // For diff blocks, omit `inline_code_bg` so lines don't get an unsightly gray box.
+    let (plain, code_bg) = if is_diff {
+        (
+            Style::default().theme_fg(theme, "ui.popup_text_fg"),
+            Style::default(),
+        )
+    } else {
+        (
+            Style::default()
+                .theme_fg(theme, "ui.popup_text_fg")
+                .theme_bg(theme, "ui.inline_code_bg"),
+            Style::default().theme_bg(theme, "ui.inline_code_bg"),
+        )
+    };
 
     let bytes = code.as_bytes();
     let mut pos = 0;
@@ -380,10 +391,28 @@ fn highlight_code_to_styled_lines(
             .category
             .map(|c| theme.resolve_modifier_key(c.theme_key()))
             .unwrap_or_default();
+        let mut span_style = code_bg.fg(span.color).add_modifier(category_attrs);
+        if let Some(cat) = span.category {
+            match cat {
+                fresh_languages::HighlightCategory::Inserted => {
+                    span_style = span_style.fg(theme.syntax_string);
+                }
+                fresh_languages::HighlightCategory::Deleted => {
+                    span_style = span_style.fg(theme.diagnostic_error_fg);
+                }
+                fresh_languages::HighlightCategory::Changed => {
+                    span_style = span_style.fg(theme.diagnostic_warning_fg);
+                }
+                _ => {}
+            }
+        }
+        if let Some(bg) = span.bg {
+            span_style = span_style.bg(bg);
+        }
         add_text_to_lines(
             &mut result,
             &text,
-            code_bg.fg(span.color).add_modifier(category_attrs),
+            span_style,
             None,
         );
 
@@ -596,6 +625,8 @@ pub fn parse_markdown(
             }
             Event::Text(text) => {
                 if in_code_block {
+                    let is_diff = code_block_lang.eq_ignore_ascii_case("diff")
+                        || code_block_lang.eq_ignore_ascii_case("patch");
                     // Try syntax highlighting for code blocks using syntect
                     let spans = if let Some(reg) = registry {
                         if !code_block_lang.is_empty() {
@@ -606,7 +637,7 @@ pub fn parse_markdown(
                             let non_ws_bytes =
                                 text.bytes().filter(|b| !b.is_ascii_whitespace()).count();
                             let good_coverage =
-                                non_ws_bytes == 0 || highlighted_bytes * 5 >= non_ws_bytes;
+                                is_diff || non_ws_bytes == 0 || highlighted_bytes * 5 >= non_ws_bytes;
                             if good_coverage {
                                 s
                             } else {
@@ -621,7 +652,7 @@ pub fn parse_markdown(
 
                     if !spans.is_empty() {
                         let highlighted_lines =
-                            highlight_code_to_styled_lines(&text, &spans, theme);
+                            highlight_code_to_styled_lines(&text, &spans, theme, is_diff);
                         for (i, styled_line) in highlighted_lines.into_iter().enumerate() {
                             if i > 0 {
                                 lines.push(StyledLine::new());
@@ -637,9 +668,13 @@ pub fn parse_markdown(
                         // Fallback: uniform code style for unknown languages.
                         // Uses `popup_text_fg` (popup body) rather than
                         // `help_key_fg` (key/heading accent) — see issue #2033.
-                        let code_style = Style::default()
-                            .theme_fg(theme, "ui.popup_text_fg")
-                            .theme_bg(theme, "ui.inline_code_bg");
+                        let code_style = if is_diff {
+                            Style::default().theme_fg(theme, "ui.popup_text_fg")
+                        } else {
+                            Style::default()
+                                .theme_fg(theme, "ui.popup_text_fg")
+                                .theme_bg(theme, "ui.inline_code_bg")
+                        };
                         add_text_to_lines(&mut lines, &text, code_style, None);
                     }
                 } else {
@@ -908,6 +943,57 @@ mod tests {
         assert!(all_text.contains("fn"), "Should contain 'fn' keyword");
         assert!(all_text.contains("main"), "Should contain 'main'");
         assert!(all_text.contains("println"), "Should contain 'println'");
+    }
+
+    #[test]
+    fn test_diff_code_block_syntax_highlighting() {
+        let theme = Theme::load_builtin(theme::THEME_DARK).unwrap();
+        let registry =
+            GrammarRegistry::load(&crate::primitives::grammar::LocalGrammarLoader::embedded_only());
+        let markdown = "```diff\n+ added line\n- deleted line\n```";
+        let lines = parse_markdown(markdown, &theme, Some(&registry));
+
+        assert!(!lines.is_empty(), "Should have parsed lines");
+        let added_line = lines
+            .iter()
+            .find(|l| l.plain_text().contains("+ added line"))
+            .expect("added line found");
+        let deleted_line = lines
+            .iter()
+            .find(|l| l.plain_text().contains("- deleted line"))
+            .expect("deleted line found");
+
+        let has_added_fg = added_line
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(theme.syntax_string));
+        assert!(
+            has_added_fg,
+            "Added line should contain syntax_string (green) fg, spans: {:?}",
+            added_line.spans
+        );
+
+        let has_deleted_fg = deleted_line
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(theme.diagnostic_error_fg));
+        assert!(
+            has_deleted_fg,
+            "Deleted line should contain diagnostic_error_fg (red) fg, spans: {:?}",
+            deleted_line.spans
+        );
+
+        // Verify diff blocks do not paint inline_code_bg gray box behind text
+        for line in [&added_line, &deleted_line] {
+            for span in &line.spans {
+                assert_ne!(
+                    span.style.bg,
+                    Some(theme.inline_code_bg),
+                    "Diff span should not have inline_code_bg, got: {:?}",
+                    span.style
+                );
+            }
+        }
     }
 
     #[test]

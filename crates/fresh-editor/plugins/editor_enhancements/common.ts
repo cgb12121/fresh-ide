@@ -41,11 +41,12 @@ export const GIT_GUTTER_CONFIG = {
 
 export const COLORS = {
   // Explicit RGB tuples ensure 100% dependable rendering without relying on theme string lookups:
-  added:       [86, 211, 100] as RGB,  // Bright Green
-  modified:    [88, 166, 255] as RGB,  // Sea Blue (#58A6FF)
+  staged:      [137, 209, 133] as RGB, // Pale Green (#89D185 - VS Code staged)
+  added:       [86, 211, 100] as RGB,  // Vibrant Green (#56D364 - VS Code added/untracked)
+  modified:    [88, 166, 255] as RGB,  // Sea Blue (#58A6FF - VS Code modified)
   deleted:     [248, 81, 73] as RGB,   // Red
   renamed:     [88, 166, 255] as RGB,  // Sea Blue
-  untracked:   [115, 201, 145] as RGB, // Green (#73C991)
+  untracked:   [86, 211, 100] as RGB,  // Vibrant Green (#56D364)
   conflicted:  [248, 81, 73] as RGB,   // Red
   ignored:     [84, 110, 122] as RGB,  // Muted Gray
   cleanFolder: [238, 255, 255] as RGB, // Crisp White
@@ -77,18 +78,19 @@ export const COLORS = {
   comment:     [84, 110, 122] as RGB,  // Gray
 
   // Custom Git Gutter:
-  gutterAdded:    [80, 250, 123] as RGB,  // Bright Green
-  gutterModified: [255, 184, 108] as RGB, // Orange/Yellow
-  gutterDeleted:  [255, 85, 85] as RGB,   // Red
+  gutterAdded:    [86, 211, 100] as RGB,  // Vibrant Green
+  gutterModified: [88, 166, 255] as RGB,  // Sea Blue
+  gutterDeleted:  [248, 81, 73] as RGB,   // Red
 };
 
 export const PRIORITY = {
   conflicted: 90,
   deleted:    80,
+  modified:   70,
+  staged:     65,
   added:      60,
-  modified:   50,
-  renamed:    40,
-  untracked:  30,
+  renamed:    55,
+  untracked:  50,
 };
 
 /** A file-explorer badge/decoration derived from a git status code. */
@@ -99,14 +101,32 @@ export interface Decoration {
 }
 
 export function statusToDecoration(status: string, staged: boolean): Decoration | null {
+  if (staged) {
+    switch (status) {
+      case "A":
+        return { symbol: "A", color: COLORS.staged, priority: PRIORITY.staged };
+      case "M":
+        return { symbol: "M", color: COLORS.staged, priority: PRIORITY.staged };
+      case "D":
+        return { symbol: "D", color: COLORS.staged, priority: PRIORITY.staged };
+      case "R":
+      case "C":
+        return { symbol: "R", color: COLORS.staged, priority: PRIORITY.staged };
+      case "U":
+        return { symbol: "!", color: COLORS.conflicted, priority: PRIORITY.conflicted };
+      default:
+        return null;
+    }
+  }
+
   switch (status) {
     case "A":
       return { symbol: "A", color: COLORS.added, priority: PRIORITY.added };
     case "M":
       return {
         symbol: "M",
-        color: staged ? COLORS.added : COLORS.modified,
-        priority: PRIORITY.modified + (staged ? 2 : 0),
+        color: COLORS.modified,
+        priority: PRIORITY.modified,
       };
     case "D":
       return { symbol: "D", color: COLORS.deleted, priority: PRIORITY.deleted };
@@ -140,15 +160,9 @@ export function getPathVariants(p: string): string[] {
   if (clean.startsWith("//?/")) {
     clean = clean.slice(4);
   }
-  // ONE canonical forward-slash path is enough. Fresh's ExplorerRoot::admit()
-  // matches separator-agnostically on Windows (Path components treat '/' and
-  // '\' alike) through a cheap lexical prefix check, and its canonical
-  // fallback already tries the backslash spelling. Emitting backslash +
-  // verbatim "\\?\" duplicates only multiplied work: every extra entry cost
-  // more cache-map inserts, and the verbatim form ALWAYS missed the lexical
-  // fast path, forcing a per-path canonicalize() syscall — the dominant cost
-  // in the ~210ms plugin_budget overruns on SetFileExplorerSlots.
-  return [clean];
+  const winClean = clean.replace(/\//g, "\\");
+  const verbatim = "\\\\?\\" + winClean;
+  return [clean, winClean, verbatim];
 }
 
 /** Fingerprint of a decoration payload, used to skip a no-op apply.

@@ -82,7 +82,17 @@ export async function refreshCustomGitExplorer() {
   lastExplorerRun = Date.now();
   try {
     const cwd = editor.getCwd();
-    const rootRes = await editor.spawnProcess("git", ["rev-parse", "--show-toplevel"], cwd);
+    let rootRes = await editor.spawnProcess("git", ["rev-parse", "--show-toplevel"], cwd);
+    if (rootRes.exit_code !== 0 || !rootRes.stdout.trim()) {
+      const activeBuf = editor.getActiveBufferId();
+      if (activeBuf) {
+        const bufPath = editor.getBufferPath(activeBuf);
+        if (bufPath) {
+          const bufDir = editor.pathDirname(bufPath);
+          rootRes = await editor.spawnProcess("git", ["rev-parse", "--show-toplevel"], bufDir);
+        }
+      }
+    }
     if (rootRes.exit_code !== 0 || !rootRes.stdout.trim()) {
       editor.clearFileExplorerDecorations(GIT_NAMESPACE);
       editor.clearFileExplorerSlots(GIT_NAMESPACE);
@@ -153,10 +163,12 @@ export async function refreshCustomGitExplorer() {
       let dec: Decoration | null = null;
       if (x === "?" && y === "?") {
         dec = { symbol: "U", color: COLORS.untracked, priority: PRIORITY.untracked };
-      } else if (x !== " " && x !== "?") {
-        dec = statusToDecoration(x, true);
-      } else if (y !== " ") {
+      } else if (y !== " " && y !== "?") {
+        // Working tree modifications take precedence (change -> sea blue)
         dec = statusToDecoration(y, false);
+      } else if (x !== " " && x !== "?") {
+        // Purely staged changes (staged -> light green)
+        dec = statusToDecoration(x, true);
       }
 
       if (!dec) continue;

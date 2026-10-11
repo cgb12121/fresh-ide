@@ -2037,20 +2037,24 @@ impl Editor {
             .and_then(|p| p.instance_states.get_mut(widget))
         {
             Some(crate::widgets::WidgetInstanceState::Text { editor, .. }) => {
+                let prev_flat = editor.flat_cursor_byte();
+                let prev_sel = editor.selection_flat_range();
                 match extend {
                     true => editor.set_cursor_from_flat_selecting(byte),
                     false => editor.set_cursor_from_flat(byte),
                 }
-                true
+                prev_flat != editor.flat_cursor_byte() || prev_sel != editor.selection_flat_range()
             }
             _ => false,
         };
         if !moved {
             return;
         }
-        self.prose_reveal_for(panel_key)
-            .reveal_byte(crate::view::shell::widgets::prose_run_key(widget), byte);
-        self.shell_description_stale = true;
+        if !extend {
+            self.prose_reveal_for(panel_key)
+                .reveal_byte(crate::view::shell::widgets::prose_run_key(widget), byte);
+            self.shell_description_stale = true;
+        }
     }
 
     /// The length of a markdown document's text, for a drag past its end.

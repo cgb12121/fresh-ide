@@ -186,9 +186,30 @@ pub fn describe_row(d: RowDesc<'_>) -> crate::view::shell::file_explorer::Row {
                 true => "editor.selection_bg",
                 false => ground,
             };
+            let seg_has_unsaved = folder_has_modified_files(&seg.path, d.unsaved);
+            let seg_is_hidden = seg.name.starts_with('.');
+            let seg_slots = d.slot_resolver.resolve(&ExplorerSlotContext {
+                path: &seg.path,
+                is_dir: true,
+                has_unsaved: seg_has_unsaved,
+                is_symlink: false,
+                is_hidden: seg_is_hidden,
+                decorations: d.decorations,
+                slot_overrides: d.slot_overrides,
+                theme: d.theme,
+                neutral_fg: d
+                    .theme
+                    .resolve_theme_key(neutral)
+                    .unwrap_or(d.theme.editor_fg),
+            });
+            let seg_name_fg = if let Some(c) = seg_slots.name_color_hint {
+                slot_paint(c, &seg_slots.name_color_key)
+            } else {
+                "ui.folder_fg".to_string()
+            };
             fe::ChainPart {
                 runs: vec![
-                    (seg.name.clone(), pair("ui.folder_fg", ground)),
+                    (seg.name.clone(), pair(&seg_name_fg, ground)),
                     ("/".to_string(), pair("editor.line_number_fg", ground)),
                 ],
                 path: seg.path.clone(),
@@ -670,6 +691,69 @@ mod tests {
         assert_eq!(
             idle.theme, over_a.theme,
             "the row itself is not the drop target"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_chain_segments_inherit_git_decoration_or_slot_color() {
+        let (_dir, view) = create_chain_renderer_view().await;
+        let theme = Theme::load_builtin("dark").unwrap();
+        let root = view.tree().root_path().to_path_buf();
+        let anchor_id = view
+            .tree()
+            .get_node_by_path(&root.join("chain/a/b/c"))
+            .unwrap()
+            .id;
+
+        let resolver = crate::view::file_tree::default_slot_providers().resolver();
+        let projection = view.projection();
+        let node = &projection.rows[projection.index_of(anchor_id).expect("a visible node")];
+
+        // Slot override on chain/a
+        let slot_overrides = FileExplorerSlotOverrideCache::rebuild(
+            vec![fresh_core::file_explorer::FileExplorerSlotEntry {
+                path: root.join("chain/a"),
+                leading: None,
+                suppress_leading: false,
+                trailing: None,
+                suppress_trailing: true,
+                name_color: Some(fresh_core::api::OverlayColorSpec::Rgb(88, 166, 255)),
+                suppress_name_color: false,
+                apply_to_children: false,
+                priority: 150,
+            }],
+            &root,
+            &HashMap::new(),
+        );
+
+        let row = describe_row(RowDesc {
+            node,
+            row: 0,
+            is_cursor: false,
+            is_multi: false,
+            focused: false,
+            unsaved: &HashSet::new(),
+            cut: &[],
+            drop_target: None,
+            fuzzy: None,
+            decorations: &FileExplorerDecorationCache::default(),
+            slot_overrides: &slot_overrides,
+            slot_resolver: &resolver,
+            theme: &theme,
+            collapsed: ">",
+            expanded: "▼",
+        });
+
+        // chain[0] is `chain/` (no change -> ui.folder_fg)
+        assert_eq!(row.chain[0].runs[0].0, "chain");
+        assert!(row.chain[0].runs[0].1.contains("ui.folder_fg"));
+
+        // chain[1] is `a/` (has slot override -> RGB 88, 166, 255 -> #58a6ff)
+        assert_eq!(row.chain[1].runs[0].0, "a");
+        assert!(
+            row.chain[1].runs[0].1.contains("#58a6ff"),
+            "segment `a/` should have the Sea Blue color hint in theme run: {}",
+            row.chain[1].runs[0].1
         );
     }
 

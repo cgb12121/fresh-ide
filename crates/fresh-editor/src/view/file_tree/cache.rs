@@ -13,6 +13,19 @@ pub(super) fn insert_with_aliases<T, FInsert>(
 {
     insert(direct, path.to_path_buf(), value.clone());
 
+    #[cfg(windows)]
+    {
+        let stripped = crate::services::terminal::manager::strip_verbatim_prefix(path);
+        if stripped.as_ref() != path {
+            insert(direct, stripped.into_owned(), value.clone());
+        }
+        let s = path.to_string_lossy();
+        if s.contains('/') {
+            let backslashed = PathBuf::from(s.replace('/', "\\"));
+            insert(direct, backslashed, value.clone());
+        }
+    }
+
     for (symlink_path, canonical_target) in symlink_mappings {
         if let Ok(suffix) = path.strip_prefix(canonical_target) {
             insert(direct, symlink_path.join(suffix), value.clone());
@@ -32,10 +45,15 @@ where
     FAncestorValue: FnMut(&Path, &T) -> T,
 {
     let mut bubbled = HashMap::new();
+    let stripped_root = crate::services::terminal::manager::strip_verbatim_prefix(root);
 
     for (path, value) in direct {
         for ancestor in path.ancestors() {
-            if !ancestor.starts_with(root) {
+            let stripped_ancestor = crate::services::terminal::manager::strip_verbatim_prefix(ancestor);
+            if !ancestor.starts_with(root)
+                && !stripped_ancestor.starts_with(stripped_root.as_ref())
+                && !ancestor.starts_with(stripped_root.as_ref())
+            {
                 break;
             }
             insert(
@@ -43,6 +61,18 @@ where
                 ancestor.to_path_buf(),
                 ancestor_value(ancestor, value),
             );
+            #[cfg(windows)]
+            {
+                let s = ancestor.to_string_lossy();
+                if s.contains('/') {
+                    let backslashed = PathBuf::from(s.replace('/', "\\"));
+                    insert(
+                        &mut bubbled,
+                        backslashed.clone(),
+                        ancestor_value(&backslashed, value),
+                    );
+                }
+            }
         }
     }
 

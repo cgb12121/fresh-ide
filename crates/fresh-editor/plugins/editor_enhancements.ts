@@ -2,6 +2,7 @@
 import { editor } from "./editor_enhancements/common.ts";
 import { requestCustomGitExplorer } from "./editor_enhancements/git_explorer.ts";
 import { requestBufferVisuals } from "./editor_enhancements/visuals.ts";
+import { handleGutterClick, handleGutterWidgetEvent } from "./editor_enhancements/git_gutter.ts";
 
 /**
  * Editor Enhancements
@@ -96,6 +97,18 @@ editor.on("focus_gained", () => {
     if (active) requestBufferVisuals(active, false);
   } catch (_e) {
     // Ignore
+  }
+});
+
+editor.on("mouse_click", (args) => {
+  if (args) {
+    handleGutterClick(args);
+  }
+});
+
+editor.on("widget_event", (args) => {
+  if (args) {
+    handleGutterWidgetEvent(args);
   }
 });
 
