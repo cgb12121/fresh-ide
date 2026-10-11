@@ -2143,8 +2143,8 @@ pub struct RenderedTreeRow {
     /// `checkable`, or when this node has `checked: None`. The
     /// caller emits a `toggle` hit area over this range.
     pub checkbox_range: Option<(usize, usize)>,
-    /// Byte range within `entry.text` of the row's action button
-    /// (`[ label ]`), brackets included. `None` for a node with no
+    /// Byte range within `entry.text` of the row's action button (framed
+    /// for labels, bare for one-column glyphs). `None` for a node with no
     /// `action`. The caller emits an `action` hit area over this range,
     /// and stops the row-wide `select` hit before it — a press on a
     /// button is the button's.
@@ -2168,7 +2168,10 @@ pub struct RenderedTreeRow {
 pub fn tree_row_action_cols(node: &TreeNode) -> usize {
     node.action
         .as_deref()
-        .map(|label| ACTION_GAP + crate::primitives::display_width::str_width(label) + 4)
+        .map(|label| {
+            let width = crate::primitives::display_width::str_width(label);
+            ACTION_GAP + width + if width == 1 { 2 } else { 4 }
+        })
         .unwrap_or(0)
 }
 
@@ -2695,6 +2698,7 @@ pub fn render_tree_row(
     // buttons stands where the reader last left the pointer rather than
     // wherever each row's text happened to stop.
     let action_range = node.action.as_deref().map(|label| {
+        let bare_glyph = crate::primitives::display_width::str_width(label) == 1;
         let drawn = crate::primitives::display_width::str_width(&text);
         // The gap is a minimum, not part of the button: the pad reaches from
         // where the body stopped to where the button starts, and is never
@@ -2707,9 +2711,13 @@ pub fn render_tree_row(
             text.push(' ');
         }
         let start = text.len();
-        text.push_str("[ ");
+        if !bare_glyph {
+            text.push_str("[ ");
+        }
         text.push_str(label);
-        text.push_str(" ]");
+        if !bare_glyph {
+            text.push_str(" ]");
+        }
         (start, text.len())
     });
 
@@ -4181,6 +4189,16 @@ pub mod tests {
         );
         assert!(plain.action_range.is_none());
         assert!(!plain.entry.text.contains('['), "{:?}", plain.entry.text);
+
+        let mut icon = tnode("pom.xml", 1, false);
+        icon.action = Some("+".into());
+        let icon_row = render_tree_row(&icon, false, false, 1, false, 40, 2, 0);
+        let (a, b) = icon_row.action_range.expect("a glyph action has a hit area");
+        assert_eq!(&icon_row.entry.text[a..b], "+");
+        assert_eq!(
+            crate::primitives::display_width::str_width(&icon_row.entry.text),
+            38
+        );
     }
 
     #[test]

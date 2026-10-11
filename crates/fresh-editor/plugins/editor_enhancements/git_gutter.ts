@@ -295,7 +295,7 @@ export async function openDiffPeek(
   linesWidgets.push(
     row(
       label(` ${fileName} `, { style: { bold: true, fg: "editor.fg" } }),
-      label(`[${typeBadge}]`, { style: { bold: true, fg: typeColor } }),
+      label(` ${typeBadge} `, { style: { bold: true, fg: typeColor } }),
       spacer(1),
       label(
         `Line ${hunk.newStart}${
@@ -320,17 +320,22 @@ export async function openDiffPeek(
   if (hunkLines.length > maxLines) {
     displayLines.push(`... (${hunkLines.length - maxLines} more lines)`);
   }
-  const diffMarkdown = "```diff\n" + displayLines.join("\n") + "\n```";
+  // Keep the diff fence for Git's added/deleted colors, while bounding each
+  // line and letting the floating panel choose the text widget's width.
+  const diffBody = displayLines
+    .map((line) => line.replace(/\t/g, "    ").slice(0, 100))
+    .join("\n");
+  const diffText = `\`\`\`diff\n${diffBody}\n\`\`\``;
   const contentRows = Math.min(22, Math.max(3, displayLines.length));
 
   linesWidgets.push(
     text({
-      value: diffMarkdown,
+      value: diffText,
       markdown: true,
       rows: contentRows,
       readOnly: true,
       focused: true,
-      fullWidth: true,
+      fullWidth: false,
       key: "git_diff_text",
     })
   );

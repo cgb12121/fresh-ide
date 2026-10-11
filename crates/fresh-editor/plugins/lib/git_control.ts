@@ -425,7 +425,11 @@ export async function fetchRemote(editor: EditorAPI): Promise<string | null> {
 /**
  * Fetch visual git commit graph lines.
  */
-export async function getGitGraph(editor: EditorAPI, maxCommits = 15): Promise<GitGraphLine[]> {
+export async function getGitGraph(
+  editor: EditorAPI,
+  maxCommits = 15,
+  skipCommits = 0,
+): Promise<GitGraphLine[]> {
   const repo = await resolveGitRepo(editor);
   if (!repo) {
     return [];
@@ -437,6 +441,7 @@ export async function getGitGraph(editor: EditorAPI, maxCommits = 15): Promise<G
       "log",
       "--graph",
       `--max-count=${maxCommits}`,
+      ...(skipCommits > 0 ? [`--skip=${skipCommits}`] : []),
       "--oneline",
       "--decorate",
       "--color=never",

@@ -19,6 +19,8 @@ import {
   spacer,
   textArea,
   textInput,
+  tree,
+  treeNode,
   type WidgetSpec,
   type WidgetEvt,
   type StyledSegment,
@@ -54,6 +56,10 @@ const PANEL_ID = 401; // Stable unique ID for Git Control Section
 
 let statusSummary: GitStatusSummary | null = null;
 let graphLines: GitGraphLine[] = [];
+const GRAPH_PAGE_SIZE = 25;
+let graphOffset = 0;
+let graphHasMore = true;
+let isLoadingGraph = false;
 let availableBranches: string[] = [];
 let currentBranchName = "";
 let commitText = "";
@@ -99,11 +105,13 @@ export async function refreshGitData(): Promise<void> {
   try {
     const [status, graph, branchInfo] = await Promise.all([
       getGitStatus(editor),
-      getGitGraph(editor, 25),
+      getGitGraph(editor, GRAPH_PAGE_SIZE),
       getGitBranches(editor),
     ]);
     statusSummary = status;
     graphLines = graph;
+    graphOffset = graph.filter((line) => line.hash).length;
+    graphHasMore = graphOffset === GRAPH_PAGE_SIZE;
     availableBranches = branchInfo.branches;
     currentBranchName = branchInfo.current || status?.branch || "";
   } catch {
@@ -120,6 +128,24 @@ export async function refreshGitData(): Promise<void> {
   if (isMounted) {
     updatePanel();
   }
+}
+
+async function loadMoreGraph(): Promise<void> {
+  if (isLoadingGraph || !graphHasMore) return;
+  isLoadingGraph = true;
+  try {
+    const page = await getGitGraph(editor, GRAPH_PAGE_SIZE, graphOffset);
+    const commits = page.filter((line) => line.hash).length;
+    const knownHashes = new Set(graphLines.map((line) => line.hash).filter(Boolean));
+    graphLines = graphLines.concat(page.filter((line) => !line.hash || !knownHashes.has(line.hash)));
+    graphOffset += commits;
+    graphHasMore = commits === GRAPH_PAGE_SIZE;
+  } catch {
+    graphHasMore = false;
+  } finally {
+    isLoadingGraph = false;
+  }
+  if (isMounted) updatePanel();
 }
 
 // File staging does not change the commit graph. Avoid resolving the repo and
@@ -514,7 +540,7 @@ function isStagedPath(path: string): boolean {
  */
 function contextMenuFor(target: ContextTarget): string[] {
   if (target.kind === "commit") {
-    return [`Copy hash ${target.hash.slice(0, 8)}`];
+    return [`Open Commit Preview`, `Copy hash ${target.hash.slice(0, 8)}`];
   }
   const staged = target.staged || isStagedPath(target.path);
   const items = ["Open File", staged ? "Open Staged Diff" : "Open Changes"];
@@ -527,12 +553,14 @@ function contextMenuFor(target: ContextTarget): string[] {
 }
 
 /** Run what the native menu offered. */
-async function runContextMenuChoice(key: string, label: string): Promise<void> {
-  const target = contextTargetOf(key);
+async function runContextMenuChoice(key: string, label: string, itemKey?: string): Promise<void> {
+  const target = contextTargetOf(itemKey || key);
   if (!target) return;
 
   if (target.kind === "commit") {
-    if (label.startsWith("Copy hash")) {
+    if (label === "Open Commit Preview") {
+      await showCommitPreview(target.hash);
+    } else if (label.startsWith("Copy hash")) {
       editor.copyToClipboard(target.hash);
       statusFeedback = `Copied ${target.hash.slice(0, 8)}`;
       updatePanel();
@@ -809,132 +837,75 @@ export function buildGitPanelSpec(): WidgetSpec {
 
   push(divider({ ch: "─" }));
 
-  // 3. Staged Changes Section (Action buttons pinned to rightmost edge)
+  // 3. Staged and unstaged files share one host-windowed tree. The panel used
+  // to emit every file as a row in this Col, so anything below the viewport
+  // was clipped and could not be reached with the wheel.
   const stagedCount = statusSummary?.staged.length ?? 0;
-  const stagedHeader = `${isStagedCollapsed ? "▶" : "▼"} STAGED CHANGES (${stagedCount})`;
-  if (stagedCount > 0) {
-    push(row(button(stagedHeader, {
-      key: "git_toggle_staged",
-      bare: true,
-      style: { bold: true, fg: "ui.file_status_added_fg" },
-    })));
-
-    if (!isStagedCollapsed) {
-      for (const item of statusSummary!.staged) {
-        const badge = getStatusBadgeStyle(item.status);
-        // Reserve 8 cols for badge (3) + flexSpacer + action button (1) + safety margin (4)
-        const path = shortenPath(item.path, 8);
-        push(
-          row(
-            label(badge.text, { style: badge.style }),
-            button(path, {
-              key: `git_preview_file:staged:${item.path}`,
-              bare: true,
-              style: getChangePathStyle(item.status),
-              hoverStyle: { fg: "syntax.function", underline: true, bold: true },
-              contextMenu: contextMenuFor({
-                kind: "file",
-                staged: true,
-                path: item.path,
-              }),
-            }),
-            flexSpacer(),
-            button("-", {
-              key: `git_unstage:${item.path}`,
-              bare: true,
-              hoverStyle: { fg: "diagnostic.error_fg" },
-            })
-          )
-        );
-      }
-    }
-  }
-
-  // 4. Changes (Unstaged) Section (Action buttons pinned to rightmost edge)
   const unstagedCount = statusSummary?.unstaged.length ?? 0;
-  const unstagedHeader = `${isUnstagedCollapsed ? "▶" : "▼"} CHANGES (${unstagedCount})`;
-  if (unstagedCount > 0) {
-    push(row(button(unstagedHeader, {
-      key: "git_toggle_unstaged",
-      bare: true,
-      style: { bold: true, fg: "ui.file_status_modified_fg" },
-    })));
-
-    if (!isUnstagedCollapsed) {
-      for (const item of statusSummary!.unstaged) {
-        const badge = getStatusBadgeStyle(item.status);
-        // Reserve 12 cols for badge (3) + flexSpacer + actions [+] [↺] (4) + safety margins (5)
-        const path = shortenPath(item.path, 12);
-        push(
-          row(
-            label(badge.text, { style: badge.style }),
-            button(path, {
-              key: `git_preview_file:unstaged:${item.path}`,
-              bare: true,
-              style: getChangePathStyle(item.status),
-              hoverStyle: { fg: "syntax.function", underline: true, bold: true },
-              contextMenu: contextMenuFor({
-                kind: "file",
-                staged: false,
-                path: item.path,
-              }),
-            }),
-            flexSpacer(),
-            button("+", {
-              key: `git_stage:${item.path}`,
-              bare: true,
-              hoverStyle: { fg: "ui.file_status_added_fg" },
-            }),
-            spacer(1),
-            button("↺", {
-              key: `git_discard:${item.path}`,
-              bare: true,
-              hoverStyle: { fg: "diagnostic.error_fg" },
-            })
-          )
-        );
-      }
+  const changeNodes = [] as ReturnType<typeof treeNode>[];
+  const changeKeys: string[] = [];
+  const stagedItems = statusSummary?.staged ?? [];
+  const unstagedItems = statusSummary?.unstaged ?? [];
+  if (stagedItems.length > 0) {
+    changeNodes.push(treeNode({ text: `STAGED CHANGES (${stagedCount})`, style: { bold: true, fg: "ui.file_status_added_fg" } }, { hasChildren: true }));
+    changeKeys.push("group:staged");
+    for (const item of stagedItems) {
+      const badge = getStatusBadgeStyle(item.status);
+      const key = `git_preview_file:staged:${item.path}`;
+      changeNodes.push(treeNode({ text: `${badge.text} ${shortenPath(item.path, 6)}`, style: getChangePathStyle(item.status) }, {
+        depth: 1,
+        flush: true,
+        action: "-",
+        contextMenu: contextMenuFor({ kind: "file", staged: true, path: item.path }),
+      }));
+      changeKeys.push(key);
     }
   }
-
-  if (stagedCount > 0 || unstagedCount > 0) push(divider({ ch: "─" }));
-
-  // 5. Git Graph Section (Lower Half: dynamically fits available width)
-  const graphHeader = `${isGraphCollapsed ? "▶" : "▼"} GIT GRAPH`;
-  push(
-    row(
-      button(graphHeader, {
-        key: "git_toggle_graph",
-        bare: true,
-        style: { bold: true, fg: "syntax.type" },
-      })
-    )
-  );
-
-  if (!isGraphCollapsed) {
-    if (graphLines.length === 0) {
-      push(
-        label("  (no graph commits)", { style: { fg: "editor.line_number_fg" } })
-      );
-    } else {
-      for (const g of graphLines) {
-        push(
-          row(
-            label(g.graph, { style: { fg: "syntax.string", bold: true } }),
-            spacer(1),
-            label(g.hash ? g.hash.slice(0, 7) : "", { style: { fg: "syntax.number" } }),
-            spacer(1),
-            button(g.subject, {
-              key: `git_commit:${g.hash}`,
-              bare: true,
-              style: { fg: "syntax.string" },
-              hoverStyle: { fg: "syntax.function", underline: true, bold: true },
-              contextMenu: contextMenuFor({ kind: "commit", hash: g.hash }),
-            })
-          )
-        );
-      }
+  if (unstagedItems.length > 0) {
+    changeNodes.push(treeNode({ text: `CHANGES (${unstagedCount})`, style: { bold: true, fg: "ui.file_status_modified_fg" } }, { hasChildren: true }));
+    changeKeys.push("group:unstaged");
+    for (const item of unstagedItems) {
+      const badge = getStatusBadgeStyle(item.status);
+      const key = `git_preview_file:unstaged:${item.path}`;
+      changeNodes.push(treeNode({ text: `${badge.text} ${shortenPath(item.path, 6)}`, style: getChangePathStyle(item.status) }, {
+        depth: 1,
+        flush: true,
+        action: "+",
+        contextMenu: contextMenuFor({ kind: "file", staged: false, path: item.path }),
+      }));
+      changeKeys.push(key);
     }
+  }
+  changeNodes.push(treeNode({ text: "GIT GRAPH", style: { bold: true, fg: "syntax.type" } }, { hasChildren: true }));
+  changeKeys.push("group:graph");
+  if (graphLines.length === 0) {
+    changeNodes.push(treeNode({ text: "(no graph commits)", style: { fg: "editor.line_number_fg" } }, { depth: 1, flush: true }));
+    changeKeys.push("git_graph:empty");
+  } else {
+    for (const g of graphLines) {
+      const hash = g.hash ?? "";
+      changeNodes.push(treeNode({
+        text: `${g.graph} ${hash.slice(0, 7)} ${g.subject}`,
+        style: { fg: "syntax.string" },
+      }, {
+        depth: 1,
+        flush: true,
+        contextMenu: contextMenuFor({ kind: "commit", hash }),
+      }));
+      changeKeys.push(`git_commit:${hash}`);
+    }
+  }
+  if (changeNodes.length > 0) {
+    push(tree({
+      nodes: changeNodes,
+      itemKeys: changeKeys,
+      expandedKeys: [
+        ...(isStagedCollapsed ? [] : ["group:staged"]),
+        ...(isUnstagedCollapsed ? [] : ["group:unstaged"]),
+        ...(isGraphCollapsed ? [] : ["group:graph"]),
+      ],
+      key: "git_changes",
+    }));
   }
 
   return col(...children);
@@ -995,6 +966,55 @@ editor.on("widget_event", async (event: WidgetEvt) => {
     return;
   }
 
+  if (key === "git_changes" && event.event_type === "expand") {
+    const payload = event.payload as { key?: string; expanded?: boolean } | undefined;
+    if (payload?.key === "group:staged") isStagedCollapsed = !payload.expanded;
+    if (payload?.key === "group:unstaged") isUnstagedCollapsed = !payload.expanded;
+    if (payload?.key === "group:graph") isGraphCollapsed = !payload.expanded;
+    return;
+  }
+
+  if (key === "git_changes" && event.event_type === "select") {
+    const itemKey = String((event.payload as { key?: unknown } | undefined)?.key ?? "");
+    if (itemKey.startsWith("git_commit:") && graphHasMore && !isLoadingGraph) {
+      const hash = itemKey.slice("git_commit:".length);
+      const commitRows = graphLines.filter((line) => line.hash);
+      const commitIndex = commitRows.findIndex((line) => line.hash === hash);
+      if (commitIndex >= commitRows.length - 5) {
+        await loadMoreGraph();
+      }
+    }
+    return;
+  }
+
+  if (key === "git_changes" && event.event_type === "activate") {
+    const itemKey = String((event.payload as { key?: unknown } | undefined)?.key ?? "");
+    if (itemKey.startsWith("git_commit:")) {
+      await showCommitPreview(itemKey.slice("git_commit:".length));
+    }
+    return;
+  }
+
+  if (key === "git_changes" && event.event_type === "action") {
+    const itemKey = String((event.payload as { key?: unknown } | undefined)?.key ?? "");
+    if (itemKey.startsWith("git_preview_file:staged:")) {
+      const file = itemKey.slice("git_preview_file:staged:".length);
+      statusFeedback = `Unstaging ${file}…`;
+      updatePanel();
+      const unstaged = await unstageFile(editor, file);
+      statusFeedback = unstaged ? "" : `Could not unstage ${file}`;
+      await refreshGitStatusData();
+    } else if (itemKey.startsWith("git_preview_file:unstaged:")) {
+      const file = itemKey.slice("git_preview_file:unstaged:".length);
+      statusFeedback = `Staging ${file}…`;
+      updatePanel();
+      const staged = await stageFile(editor, file);
+      statusFeedback = staged ? "" : `Could not stage ${file}`;
+      await refreshGitStatusData();
+    }
+    return;
+  }
+
   // Branch selection dropdown change (optimized with optimistic update)
   if (key === "git_branch_dropdown" && event.event_type === "change") {
     const payload = event.payload as { index?: number; value?: string } | undefined;
@@ -1026,8 +1046,10 @@ editor.on("widget_event", async (event: WidgetEvt) => {
   // it was opened from plus the label chosen. It is not an `activate`, so it
   // has to be answered before the filter below.
   if (event.event_type === "plugin_menu") {
-    const label = String((event.payload as { label?: unknown })?.label ?? "");
-    await runContextMenuChoice(key, label);
+    const payload = event.payload as { label?: unknown; key?: unknown } | undefined;
+    const label = String(payload?.label ?? "");
+    const itemKey = typeof payload?.key === "string" ? payload.key : undefined;
+    await runContextMenuChoice(key, label, itemKey);
     return;
   }
 
@@ -1182,12 +1204,6 @@ editor.on("widget_event", async (event: WidgetEvt) => {
   }
 
   // Toggles
-  if (key === "git_toggle_staged") {
-    isStagedCollapsed = !isStagedCollapsed;
-    updatePanel();
-    return;
-  }
-
   if (key.startsWith("git_commit:")) {
     const hash = key.slice("git_commit:".length);
     await showCommitPreview(hash);
@@ -1211,18 +1227,6 @@ editor.on("widget_event", async (event: WidgetEvt) => {
       // reaches the editor.
       editor.openFile(`${repoRoot}/${path}`);
     }
-    return;
-  }
-
-  if (key === "git_toggle_unstaged") {
-    isUnstagedCollapsed = !isUnstagedCollapsed;
-    updatePanel();
-    return;
-  }
-
-  if (key === "git_toggle_graph") {
-    isGraphCollapsed = !isGraphCollapsed;
-    updatePanel();
     return;
   }
 
@@ -1255,13 +1259,6 @@ editor.on("widget_event", async (event: WidgetEvt) => {
     statusFeedback = discarded ? "" : `Could not discard ${file}`;
     await refreshGitStatusData();
     return;
-  }
-});
-
-// Auto-refresh on editor buffer focus changes
-editor.on("active_buffer_changed", () => {
-  if (isMounted) {
-    refreshGitStatusData();
   }
 });
 
