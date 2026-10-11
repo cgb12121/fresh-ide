@@ -29,6 +29,7 @@ interface BufferGitGutterState {
 
 const SCROLL_NAMESPACE = "git-gutter-scroll";
 const DIFF_PANEL_ID = 9988;
+const DIFF_PANEL_WIDTH_PCT = 72;
 
 const bufferGutterStates: Map<number, BufferGitGutterState> = new Map();
 let currentPeekBufferId: number | null = null;
@@ -290,6 +291,11 @@ export async function openDiffPeek(
   const typeBadge = hunk.type.toUpperCase();
 
   const linesWidgets: WidgetSpec[] = [];
+  const screenWidth = editor.getScreenSize().width;
+  // The centered frame is 72% of the terminal. Give the panel's Col a child
+  // at its inner width so its markdown text area lays out to the frame and
+  // keeps its own scrollbar against the right border instead of its content.
+  const contentWidth = Math.max(12, Math.floor(screenWidth * DIFF_PANEL_WIDTH_PCT / 100) - 4);
 
   // 1. File name row in pure white (editor.fg) with diff type badge and line range
   linesWidgets.push(
@@ -311,7 +317,7 @@ export async function openDiffPeek(
     label(" " + hunkHeader, { style: { bold: true, fg: typeColor } })
   );
   linesWidgets.push(
-    label("─".repeat(56), { style: { fg: "editor.line_number_fg" } })
+    label("─".repeat(contentWidth), { style: { fg: "editor.line_number_fg" } })
   );
 
   // 3. Selectable, copyable diff code block with full syntax highlighting & instant response
@@ -347,7 +353,7 @@ export async function openDiffPeek(
   editor.mountFloatingWidget(
     DIFF_PANEL_ID,
     spec,
-    72,
+    DIFF_PANEL_WIDTH_PCT,
     heightPct,
     false,
     false,
