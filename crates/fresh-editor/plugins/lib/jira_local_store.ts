@@ -13,7 +13,7 @@ export interface BacklogTicket {
   priority: string;
   storyPoints: number;
   status: string;
-  statusCategory: "todo" | "in_progress" | "done" | "blocked" | "other";
+  statusCategory: "todo" | "in_progress" | "done" | "blocked" | "rejected" | "other";
   targetCodeFile: string;
   ticketFilePath: string;
   sprintId: string;
@@ -37,6 +37,7 @@ export interface SprintInfo {
   completedSp: number;
   inProgressSp: number;
   todoSp: number;
+  rejectedSp: number;
   progressPercent: number;
 }
 
@@ -57,24 +58,50 @@ export function getCustomBacklogRoot(): string | null {
   return userConfiguredPath;
 }
 
-export function categorizeStatus(status: string): "todo" | "in_progress" | "done" | "blocked" | "other" {
-  const upper = status.toUpperCase();
-  if (upper.includes("DONE") || upper.includes("CLOSE") || upper.includes("RESOLVED")) return "done";
+export function categorizeStatus(status: string): "todo" | "in_progress" | "done" | "blocked" | "rejected" | "other" {
+  const upper = (status || "").toUpperCase();
+  if (
+    upper.includes("REJECT") ||
+    upper.includes("CANCEL") ||
+    upper.includes("WONTFIX") ||
+    upper.includes("WON'T FIX") ||
+    upper.includes("WONT_FIX") ||
+    upper.includes("DROPPED") ||
+    upper.includes("INVALID") ||
+    upper.includes("DISCARD") ||
+    upper.includes("ABANDON")
+  ) {
+    return "rejected";
+  }
+  if (
+    upper.includes("DONE") ||
+    upper.includes("CLOSE") ||
+    upper.includes("RESOLVED") ||
+    upper.includes("COMPLET")
+  ) {
+    return "done";
+  }
   if (
     upper.includes("IN_PROGRESS") ||
     upper.includes("IN-PROGRESS") ||
+    upper.includes("IN_DEV") ||
     upper.includes("IMPLEMENT") ||
     upper.includes("TRACE") ||
     upper.includes("DECIDE") ||
-    upper.includes("ACTIVE")
+    upper.includes("ACTIVE") ||
+    upper.includes("REVIEW") ||
+    upper.includes("TEST")
   ) {
     return "in_progress";
   }
   if (
     upper.includes("READY") ||
     upper.includes("TODO") ||
+    upper.includes("TO_DO") ||
     upper.includes("CLAIM") ||
-    upper.includes("BACKLOG")
+    upper.includes("BACKLOG") ||
+    upper.includes("PLAN") ||
+    upper.includes("OPEN")
   ) {
     return "todo";
   }
@@ -82,6 +109,7 @@ export function categorizeStatus(status: string): "todo" | "in_progress" | "done
     upper.includes("BLOCK") ||
     upper.includes("GATED") ||
     upper.includes("HOLD") ||
+    upper.includes("WAIT") ||
     upper.includes("DUPLICATE")
   ) {
     return "blocked";
@@ -92,7 +120,7 @@ export function categorizeStatus(status: string): "todo" | "in_progress" | "done
 export function cleanMarkdownCell(cell: string): string {
   return cell
     .replace(/[`*]/g, "")
-    .replace(/[✅🔴🟡🟢📋⚖️⏸️]/g, "")
+    .replace(/[✅🔴🟡🟢📋⚖️⏸️❌🚫✖✕]/g, "")
     .trim();
 }
 
@@ -349,6 +377,7 @@ export function parseSprint(
   let completedSp = 0;
   let inProgressSp = 0;
   let todoSp = 0;
+  let rejectedSp = 0;
 
   for (const t of tickets) {
     totalSp += t.storyPoints;
@@ -356,6 +385,8 @@ export function parseSprint(
       completedSp += t.storyPoints;
     } else if (t.statusCategory === "in_progress") {
       inProgressSp += t.storyPoints;
+    } else if (t.statusCategory === "rejected") {
+      rejectedSp += t.storyPoints;
     } else {
       todoSp += t.storyPoints;
     }
@@ -376,6 +407,7 @@ export function parseSprint(
     completedSp,
     inProgressSp,
     todoSp,
+    rejectedSp,
     progressPercent,
   };
 }
@@ -450,13 +482,18 @@ export function updateTicketStatus(
     if (ticket.boardPath) {
       const boardContent = editor.readFile(ticket.boardPath);
       if (boardContent) {
+        const upper = newStatus.toUpperCase();
         const statusGlyph =
-          newStatus === "DONE"
+          upper.includes("DONE") || upper.includes("CLOSE") || upper.includes("RESOLV")
             ? "✅ "
-            : newStatus === "IN_PROGRESS"
+            : upper.includes("IN_PROGRESS") || upper.includes("IN-PROGRESS") || upper.includes("DEV")
             ? "🔄 "
-            : newStatus === "READY_FOR_DEV"
+            : upper.includes("READY") || upper.includes("TODO")
             ? "📋 "
+            : upper.includes("REJECT") || upper.includes("CANCEL") || upper.includes("WONTFIX") || upper.includes("INVALID")
+            ? "❌ "
+            : upper.includes("BLOCK")
+            ? "🚫 "
             : "";
 
         const lines = boardContent.split(/\r?\n/);

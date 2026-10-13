@@ -45,7 +45,7 @@ const SIDEBAR_MODE = "jira-sidebar";
 let isMounted = false;
 let backlogWorkspace: BacklogWorkspace | null = null;
 let activeSprintId: string = "";
-let activeStatusFilter: "all" | "todo" | "in_progress" | "done" | "blocked" = "all";
+let activeStatusFilter: "all" | "todo" | "in_progress" | "done" | "blocked" | "rejected" = "all";
 let sortMode: "prio" | "points" | "id" = "prio";
 let searchQuery: string = "";
 let selectedTicketIndex: number = 0;
@@ -59,12 +59,13 @@ const SORT_OPTIONS: string[] = ["Sort: Prio", "Sort: Points", "Sort: ID"];
 let detailBufferId: number | null = null;
 let activeDetailTicketId: string | null = null;
 
-const STATUS_FILTER_KEYS: Array<"all" | "todo" | "in_progress" | "done" | "blocked"> = [
+const STATUS_FILTER_KEYS: Array<"all" | "todo" | "in_progress" | "done" | "blocked" | "rejected"> = [
   "all",
   "todo",
   "in_progress",
   "done",
   "blocked",
+  "rejected",
 ];
 
 // ── Width & Text Helpers ─────────────────────────────────────────────────────
@@ -104,16 +105,74 @@ function getByteLength(str: string): number {
   return s;
 }
 
-function renderProgressBar(percent: number, barWidth: number): string {
+// Semantic Color Accents (RGB guarantees vibrant render across all terminal themes)
+const COLOR_REJECTED: [number, number, number] = [248, 81, 73]; // Theme error red (#f85149)
+const COLOR_BLOCKED: [number, number, number] = [255, 145, 40];  // Amber warning (#ff9128)
+
+function renderMultiSegmentProgressBar(
+  doneSp: number,
+  rejectedSp: number,
+  totalSp: number,
+  barWidth: number
+): WidgetSpec[] {
   const safeBarWidth = Math.max(4, barWidth);
-  const filled = Math.min(safeBarWidth, Math.max(0, Math.round((percent / 100) * safeBarWidth)));
-  const empty = Math.max(0, safeBarWidth - filled);
-  return `${"█".repeat(filled)}${"░".repeat(empty)}`;
+  if (totalSp <= 0) {
+    return [
+      label(" "),
+      label("░".repeat(safeBarWidth), { style: { fg: "editor.line_number_fg" } }),
+    ];
+  }
+
+  let doneBlocks = Math.round((doneSp / totalSp) * safeBarWidth);
+  let rejectedBlocks = Math.round((rejectedSp / totalSp) * safeBarWidth);
+
+  // Guarantee at least 1 block if points exist and room allows
+  if (doneSp > 0 && doneBlocks === 0) {
+    doneBlocks = 1;
+  }
+  if (rejectedSp > 0 && rejectedBlocks === 0) {
+    rejectedBlocks = 1;
+  }
+
+  if (doneBlocks + rejectedBlocks > safeBarWidth) {
+    if (rejectedBlocks > 0 && doneBlocks > 1) {
+      doneBlocks = safeBarWidth - rejectedBlocks;
+    } else {
+      rejectedBlocks = Math.max(0, safeBarWidth - doneBlocks);
+    }
+  }
+
+  const emptyBlocks = Math.max(0, safeBarWidth - doneBlocks - rejectedBlocks);
+
+  const barSpecs: WidgetSpec[] = [label(" ")];
+  if (doneBlocks > 0) {
+    barSpecs.push(
+      label("█".repeat(doneBlocks), {
+        style: { bold: true, fg: "syntax.string" },
+      })
+    );
+  }
+  if (rejectedBlocks > 0) {
+    barSpecs.push(
+      label("█".repeat(rejectedBlocks), {
+        style: { bold: true, fg: COLOR_REJECTED },
+      })
+    );
+  }
+  if (emptyBlocks > 0) {
+    barSpecs.push(
+      label("░".repeat(emptyBlocks), {
+        style: { fg: "editor.line_number_fg" },
+      })
+    );
+  }
+
+  return barSpecs;
 }
 
 // ── Status & Priority Badging ────────────────────────────────────────────────
 
-function getStatusGlyph(statusCategory: string): { glyph: string; fg: string } {
+function getStatusGlyph(statusCategory: string): { glyph: string; fg: [number, number, number] | string } {
   switch (statusCategory) {
     case "done":
       return { glyph: "✓", fg: "syntax.string" };
@@ -122,28 +181,30 @@ function getStatusGlyph(statusCategory: string): { glyph: string; fg: string } {
     case "todo":
       return { glyph: "○", fg: "syntax.type" };
     case "blocked":
-      return { glyph: "■", fg: "syntax.error" };
+      return { glyph: "■", fg: COLOR_BLOCKED };
+    case "rejected":
+      return { glyph: "✕", fg: COLOR_REJECTED };
     default:
       return { glyph: "·", fg: "editor.line_number_fg" };
   }
 }
 
-function getPriorityStyle(priority: string): { fg: string; bold: boolean } {
+function getPriorityStyle(priority: string): { fg: [number, number, number] | string; bold: boolean } {
   const p = (priority || "").toUpperCase();
   if (p.includes("CRIT") || p.includes("BLOCK")) {
-    return { fg: "diagnostic.error_fg", bold: true };
+    return { fg: [185, 40, 40], bold: false }; // Đỏ đậm, không bold
   }
   if (p.includes("HIGH")) {
-    return { fg: "syntax.string", bold: false };
+    return { fg: [255, 145, 40], bold: false }; // Cam
   }
   if (p.includes("MED")) {
-    return { fg: "diagnostic.warning_fg", bold: false };
+    return { fg: [240, 195, 60], bold: false }; // Vàng
   }
   // Low or other: light blue / cyan
-  return { fg: "syntax.variable", bold: false };
+  return { fg: [110, 180, 245], bold: false };
 }
 
-function getPriorityFg(priority: string): string {
+function getPriorityFg(priority: string): [number, number, number] | string {
   return getPriorityStyle(priority).fg;
 }
 
@@ -283,7 +344,8 @@ function parseTicketSections(rawContent: string): {
 function buildTicketDetailEntries(ticket: BacklogTicket): TextPropertyEntry[] {
   const entries: TextPropertyEntry[] = [];
   const statusGlyph = getStatusGlyph(ticket.statusCategory);
-  const priorityFg = getPriorityFg(ticket.priority);
+  const prioStyle = getPriorityStyle(ticket.priority);
+  const priorityFg = prioStyle.fg;
 
   // Read ticket markdown for deep sections
   let rawContent = "";
@@ -309,7 +371,7 @@ function buildTicketDetailEntries(ticket: BacklogTicket): TextPropertyEntry[] {
   });
 
   // 2. Metadata Grid (Aligned Key-Value pairs)
-  const metaRows: Array<[string, string, string, string, string?]> = [
+  const metaRows: Array<[string, string, string, string, any?]> = [
     ["Status", `${ticket.status} ${statusGlyph.glyph}`, "Assignee", ticket.assignee || "Unassigned", statusGlyph.fg],
     ["Priority", ticket.priority, "Story Points", `${ticket.storyPoints} SP`, priorityFg],
     ["Sprint", ticket.sprintId, "Epic", ticket.epic || "None"],
@@ -326,7 +388,7 @@ function buildTicketDetailEntries(ticket: BacklogTicket): TextPropertyEntry[] {
     });
     entries.push({
       text: v1.padEnd(20),
-      style: { fg: v1Fg || "editor.fg", bold: true },
+      style: { fg: v1Fg || "editor.fg", bold: k1 === "Priority" ? prioStyle.bold : true },
     });
     entries.push({
       text: `${k2.padEnd(13)}: `,
@@ -352,7 +414,7 @@ function buildTicketDetailEntries(ticket: BacklogTicket): TextPropertyEntry[] {
     style: { fg: "syntax.function", bold: true },
   });
   entries.push({
-    text: "Advance Status    ",
+    text: "Set Status        ",
     style: { fg: "editor.fg" },
   });
   entries.push({
@@ -465,7 +527,7 @@ function getTargetSplitId(): number {
   } catch {}
   try {
     const splits = editor.listSplits();
-    if (splits && splits.length > 0) return splits[0].id;
+    if (splits && splits.length > 0) return splits[0].splitId;
   } catch {}
   return 0;
 }
@@ -656,24 +718,30 @@ export function buildJiraPanelSpec(): WidgetSpec {
   // Progress Bar & SP Counter
   const totalSp = curSprint ? curSprint.totalSp : backlogWorkspace.allTickets.reduce((acc, t) => acc + t.storyPoints, 0);
   const doneSp = curSprint ? curSprint.completedSp : backlogWorkspace.allTickets.filter((t) => t.statusCategory === "done").reduce((acc, t) => acc + t.storyPoints, 0);
-  const percent = totalSp > 0 ? Math.round((doneSp / totalSp) * 100) : 0;
+  const rejectedSp = curSprint ? curSprint.rejectedSp : backlogWorkspace.allTickets.filter((t) => t.statusCategory === "rejected").reduce((acc, t) => acc + t.storyPoints, 0);
 
   // Budget progress bar width to prevent wrapping at 24 cols
-  const spText = `${doneSp} / ${totalSp} SP`;
-  const barBudget = Math.max(4, Math.min(12, sidebarWidth - editor.stringWidth(spText) - 5));
-  const barText = renderProgressBar(percent, barBudget);
+  const spText = `${doneSp}/${totalSp} SP`;
+  const rejText = rejectedSp > 0 ? ` (${rejectedSp} rej)` : "";
+  const totalTextWidth = editor.stringWidth(spText) + editor.stringWidth(rejText);
+  const barBudget = Math.max(4, Math.min(12, sidebarWidth - totalTextWidth - 4));
+  const progressSpecs = renderMultiSegmentProgressBar(doneSp, rejectedSp, totalSp, barBudget);
 
-  widgets.push(
-    row(
-      label(` ${barText}`, {
-        style: { bold: true, fg: "syntax.string" },
-      }),
-      spacer(1),
-      label(spText, {
-        style: { fg: "editor.line_number_fg" },
+  const progressRow: WidgetSpec[] = [
+    ...progressSpecs,
+    spacer(1),
+    label(spText, {
+      style: { fg: "editor.line_number_fg" },
+    }),
+  ];
+  if (rejectedSp > 0) {
+    progressRow.push(
+      label(rejText, {
+        style: { bold: true, fg: COLOR_REJECTED },
       })
-    )
-  );
+    );
+  }
+  widgets.push(row(...progressRow));
 
   // 3. Filter Dropdown and Sort Dropdown on the SAME row
   widgets.push(spacer(1));
@@ -684,6 +752,7 @@ export function buildJiraPanelSpec(): WidgetSpec {
     `In Dev (${candidateTickets.filter((t) => t.statusCategory === "in_progress").length})`,
     `Done (${candidateTickets.filter((t) => t.statusCategory === "done").length})`,
     `Blocked (${candidateTickets.filter((t) => t.statusCategory === "blocked").length})`,
+    `Rejected (${candidateTickets.filter((t) => t.statusCategory === "rejected").length})`,
   ];
 
   const currentFilterIdx = STATUS_FILTER_KEYS.indexOf(activeStatusFilter);
@@ -732,6 +801,7 @@ export function buildJiraPanelSpec(): WidgetSpec {
     widgets.push(label(" KEYBOARD NAVIGATION", { style: { bold: true, fg: "syntax.keyword" } }));
     widgets.push(label("  ↑↓ / j/k : Navigate issues", { style: { fg: "editor.fg" } }));
     widgets.push(label("  Enter    : Open ticket", { style: { fg: "editor.fg" } }));
+    widgets.push(label("  x / S    : Cycle / Set status", { style: { fg: "editor.fg" } }));
     widgets.push(label("  /        : Search ID/title", { style: { fg: "editor.fg" } }));
     widgets.push(label("  f        : Cycle status filter", { style: { fg: "editor.fg" } }));
     widgets.push(label("  o        : Cycle sort mode", { style: { fg: "editor.fg" } }));
@@ -772,7 +842,7 @@ export function buildJiraPanelSpec(): WidgetSpec {
           button(`${ticket.id} `, {
             key: `jira_open_ticket:${ticket.id}`,
             bare: true,
-            style: { fg: prioStyle.fg, bold: true, ...selBg },
+            style: { fg: prioStyle.fg, bold: prioStyle.bold, ...selBg },
             hoverStyle: { fg: "syntax.function", bold: true },
           }),
           label(`${ticket.storyPoints}pt `, {
@@ -783,7 +853,7 @@ export function buildJiraPanelSpec(): WidgetSpec {
             bare: true,
             style: {
               fg: prioStyle.fg,
-              bold: prioStyle.bold || isSelected,
+              bold: prioStyle.bold,
               ...selBg,
             },
             hoverStyle: { fg: "syntax.function", bold: true },
@@ -885,7 +955,10 @@ async function searchPrompt(): Promise<void> {
   }
 }
 
-async function cycleTicketStatus(ticketId: string | null): Promise<void> {
+async function promptOrCycleTicketStatus(
+  ticketId: string | null,
+  interactive: boolean = false
+): Promise<void> {
   if (!ticketId || !backlogWorkspace) return;
   const ticket = backlogWorkspace.allTickets.find((t) => t.id === ticketId);
   if (!ticket) return;
@@ -896,20 +969,52 @@ async function cycleTicketStatus(ticketId: string | null): Promise<void> {
   } else if (ticket.statusCategory === "in_progress") {
     nextStatus = "DONE";
   } else if (ticket.statusCategory === "done") {
+    nextStatus = "REJECTED";
+  } else if (ticket.statusCategory === "rejected") {
     nextStatus = "READY_FOR_DEV";
+  } else if (ticket.statusCategory === "blocked") {
+    nextStatus = "IN_PROGRESS";
   } else {
     nextStatus = "READY_FOR_DEV";
   }
 
-  const ok = updateTicketStatus(editor, ticket, nextStatus);
+  let chosenStatus = nextStatus;
+
+  if (interactive) {
+    const promptText = `Set status for ${ticket.id} (1:READY, 2:IN_DEV, 3:DONE, 4:BLOCKED, 5:REJECTED, or custom):`;
+    const input = await editor.prompt(promptText, nextStatus);
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed) return;
+
+    if (trimmed === "1" || trimmed.toLowerCase() === "ready") {
+      chosenStatus = "READY_FOR_DEV";
+    } else if (trimmed === "2" || trimmed.toLowerCase() === "dev" || trimmed.toLowerCase() === "in_dev" || trimmed.toLowerCase() === "progress") {
+      chosenStatus = "IN_PROGRESS";
+    } else if (trimmed === "3" || trimmed.toLowerCase() === "done") {
+      chosenStatus = "DONE";
+    } else if (trimmed === "4" || trimmed.toLowerCase() === "block" || trimmed.toLowerCase() === "blocked") {
+      chosenStatus = "BLOCKED";
+    } else if (trimmed === "5" || trimmed.toLowerCase() === "reject" || trimmed.toLowerCase() === "rejected") {
+      chosenStatus = "REJECTED";
+    } else {
+      chosenStatus = trimmed.toUpperCase();
+    }
+  }
+
+  const ok = updateTicketStatus(editor, ticket, chosenStatus);
   if (ok) {
-    feedbackMessage = `${ticket.id} → ${nextStatus}`;
+    feedbackMessage = `${ticket.id} → ${chosenStatus}`;
     refreshBacklogData();
     await updateActiveDetailBuffer();
   } else {
     feedbackMessage = `Failed to update ${ticket.id}`;
   }
   updatePanel();
+}
+
+async function cycleTicketStatus(ticketId: string | null): Promise<void> {
+  return promptOrCycleTicketStatus(ticketId, false);
 }
 
 async function openTargetCode(ticketId: string | null): Promise<void> {
@@ -1002,8 +1107,24 @@ registerHandler("jira_escape", () => {
   }
 });
 
+// Sidebar Mode Key Handlers
+registerHandler("jira_sidebar_cycle_ticket", () => {
+  const tickets = getFilteredTickets();
+  if (tickets.length > 0 && selectedTicketIndex >= 0 && selectedTicketIndex < tickets.length) {
+    const ticket = tickets[selectedTicketIndex];
+    void promptOrCycleTicketStatus(ticket.id, false);
+  }
+});
+registerHandler("jira_sidebar_status_prompt", () => {
+  const tickets = getFilteredTickets();
+  if (tickets.length > 0 && selectedTicketIndex >= 0 && selectedTicketIndex < tickets.length) {
+    const ticket = tickets[selectedTicketIndex];
+    void promptOrCycleTicketStatus(ticket.id, true);
+  }
+});
+
 // Detail Pane Handlers
-registerHandler("jira_detail_status_advance", () => void cycleTicketStatus(activeDetailTicketId));
+registerHandler("jira_detail_status_advance", () => void promptOrCycleTicketStatus(activeDetailTicketId, true));
 registerHandler("jira_detail_open_code", () => void openTargetCode(activeDetailTicketId));
 registerHandler("jira_detail_edit_raw", () => openRawTicketMarkdown(activeDetailTicketId));
 registerHandler("jira_detail_branch", () => void createTicketBranch(activeDetailTicketId));
@@ -1018,6 +1139,8 @@ editor.defineMode(
     ["Down", "jira_nav_down"],
     ["Up", "jira_nav_up"],
     ["Return", "jira_open_selected"],
+    ["x", "jira_sidebar_cycle_ticket"],
+    ["S", "jira_sidebar_status_prompt"],
     ["/", "jira_search"],
     ["f", "jira_filter_cycle"],
     ["o", "jira_sort_toggle"],
