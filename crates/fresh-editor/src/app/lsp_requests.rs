@@ -260,9 +260,24 @@ impl Editor {
         self.active_window_mut().pending_goto_definition_request = None;
 
         if locations.is_empty() {
-            let message = self
-                .expired_request_message("textDocument/definition")
-                .unwrap_or_else(|| t!("lsp.no_definition").to_string());
+            let expired = self.expired_request_message("textDocument/definition");
+            let message = match &expired {
+                Some(m) => m.clone(),
+                None => t!("lsp.no_definition").to_string(),
+            };
+            // `expired` means the editor cancelled this request itself (cursor
+            // moved, edit, scroll) — an editor-side drop, not the server
+            // answering with nothing. The server-side answer is logged in
+            // `LspState::handle_goto_definition`; this line pairs the two.
+            tracing::debug!(
+                "Go-to-definition response {} carried no locations ({})",
+                request_id,
+                if expired.is_some() {
+                    "request superseded by the editor"
+                } else {
+                    "server answered empty"
+                }
+            );
             self.active_window_mut().status_message = Some(message);
             return Ok(());
         }

@@ -6685,11 +6685,29 @@ impl Editor {
     /// Resolved by path so it composes race-free with a preceding `openFile`
     /// command: both are processed in order, so the buffer exists here.
     fn handle_mark_buffer_read_only(&mut self, path: std::path::PathBuf) {
+        let normalize = |p: &std::path::Path| -> String {
+            let s = p.to_string_lossy();
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            let s = s.replace('\\', "/");
+            #[cfg(target_os = "windows")]
+            {
+                s.to_lowercase()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                s
+            }
+        };
+        let norm_target = normalize(&path);
         let buffer_id = self
             .active_window()
             .buffer_metadata
             .iter()
-            .find(|(_, m)| m.file_path().map(|p| p == &path).unwrap_or(false))
+            .find(|(_, m)| {
+                m.file_path()
+                    .map(|p| normalize(p) == norm_target)
+                    .unwrap_or(false)
+            })
             .map(|(id, _)| *id);
         match buffer_id {
             Some(id) => {

@@ -1435,6 +1435,27 @@ impl LspState {
             }]
         });
 
+        let mut initialization_options = initialization_options;
+        if self.language.eq_ignore_ascii_case("java")
+            || self.server_name.to_lowercase().contains("jdt")
+        {
+            let mut opts = match initialization_options.take() {
+                Some(Value::Object(map)) => Value::Object(map),
+                _ => serde_json::json!({}),
+            };
+            if let Some(obj) = opts.as_object_mut() {
+                let ext = obj
+                    .entry("extendedClientCapabilities")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(ext_obj) = ext.as_object_mut() {
+                    ext_obj
+                        .entry("classFileContentsSupport")
+                        .or_insert_with(|| serde_json::json!(true));
+                }
+            }
+            initialization_options = Some(opts);
+        }
+
         // Pushed again after `initialized`, see below.
         let settings = initialization_options.clone();
 
@@ -1773,6 +1794,10 @@ impl LspState {
             character
         );
 
+        // `text_document_position` takes the uri by value, so keep the string
+        // for the diagnostics below.
+        let uri_str = uri.as_str().to_string();
+
         let params = GotoDefinitionParams {
             text_document_position_params: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
@@ -1786,7 +1811,31 @@ impl LspState {
         {
             Ok(result) => {
                 // Parse the definition response (can be Location, Vec<Location>, or LocationLink)
-                let locations = Self::locations_from_response(result);
+                let locations = Self::locations_from_response(result.clone());
+
+                // A `null` result, a payload in a shape the decoder does not
+                // recognise, and a response the editor dropped all reach the
+                // user as the same "No definition found" with no trail. Record
+                // what the server actually said, and where it was asked, so
+                // "the server had no answer" can be told from "the answer went
+                // missing".
+                if locations.is_empty() {
+                    let raw = if result.is_null() {
+                        "null - server reports no definition".to_string()
+                    } else {
+                        let rendered = result.to_string();
+                        rendered.chars().take(300).collect::<String>()
+                    };
+                    tracing::info!(
+                        "Go-to-definition at {}:{}:{} on '{}' ({}) parsed to no location: {}",
+                        uri_str,
+                        line,
+                        character,
+                        self.server_name.as_str(),
+                        self.language.as_str(),
+                        raw
+                    );
+                }
 
                 // Send to main loop
                 let _ = self.async_tx.send(AsyncMessage::LspGotoDefinition {
@@ -1796,7 +1845,15 @@ impl LspState {
                 Ok(())
             }
             Err(e) => {
-                tracing::debug!("Go-to-definition request failed: {}", e);
+                tracing::info!(
+                    "Go-to-definition at {}:{}:{} on '{}' ({}) failed: {}",
+                    uri_str,
+                    line,
+                    character,
+                    self.server_name.as_str(),
+                    self.language.as_str(),
+                    e
+                );
                 // Send empty locations on error
                 let _ = self.async_tx.send(AsyncMessage::LspGotoDefinition {
                     request_id,
@@ -3424,9 +3481,26 @@ impl LspTask {
                         message: None,
                     });
                     tracing::info!("Processing Initialize command");
-                    // Publish the options before initializing so the stdout
-                    // reader can answer the server's `workspace/configuration`
-                    // pull (which arrives only after `initialize`).
+                    let mut initialization_options = initialization_options;
+                    if language_clone.eq_ignore_ascii_case("java")
+                        || server_name.to_lowercase().contains("jdt")
+                    {
+                        let mut opts = match initialization_options.take() {
+                            Some(Value::Object(map)) => Value::Object(map),
+                            _ => serde_json::json!({}),
+                        };
+                        if let Some(obj) = opts.as_object_mut() {
+                            let ext = obj
+                                .entry("extendedClientCapabilities")
+                                .or_insert_with(|| serde_json::json!({}));
+                            if let Some(ext_obj) = ext.as_object_mut() {
+                                ext_obj
+                                    .entry("classFileContentsSupport")
+                                    .or_insert_with(|| serde_json::json!(true));
+                            }
+                        }
+                        initialization_options = Some(opts);
+                    }
                     *config_options.lock().unwrap() = initialization_options.clone();
                     let result = await_draining!(
                         state.handle_initialize_sequential(
@@ -4144,6 +4218,25 @@ fn resolve_configuration_section(
                 }
                 if resolved {
                     return current.clone();
+                }
+
+                // If not found at top level, check under `settings` object
+                // (e.g. init_options = { "settings": { "java": ... } })
+                if let Some(settings) = options.get("settings") {
+                    let mut current = settings;
+                    let mut resolved_settings = true;
+                    for part in section.split('.') {
+                        match current.get(part) {
+                            Some(next) => current = next,
+                            None => {
+                                resolved_settings = false;
+                                break;
+                            }
+                        }
+                    }
+                    if resolved_settings {
+                        return current.clone();
+                    }
                 }
             }
             // No section requested: hand back the whole configured object.
