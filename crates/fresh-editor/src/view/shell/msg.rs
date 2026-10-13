@@ -249,6 +249,12 @@ pub enum UiFact {
         slot: super::widgets::Slot,
         /// The button the menu was opened from, carried through to the choice.
         widget_key: String,
+        /// **The row, when the menu belongs to one.** A `Tree`'s rows all
+        /// carry the tree's key, so `widget_key` alone would name the tree
+        /// and nothing else; a node that declared its own menu carries its
+        /// `item_keys` entry here and it rides along to the `plugin_menu`
+        /// event. Empty for a button, whose `widget_key` already names it.
+        item_key: String,
         /// Screen cell of the press, before edge-clamping.
         x: u16,
         y: u16,

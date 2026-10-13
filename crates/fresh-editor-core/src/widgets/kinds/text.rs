@@ -311,6 +311,7 @@ impl WidgetImpl for Text {
         panel: &mut crate::widgets::WidgetPanelState,
         _viewport: super::Viewport,
         delta: i32,
+        _fx: &mut super::KeyFx,
     ) -> bool {
         let WidgetSpec::Text {
             completions_visible_rows,

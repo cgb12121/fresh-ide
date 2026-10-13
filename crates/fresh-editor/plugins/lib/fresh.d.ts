@@ -1553,6 +1553,27 @@ type TreeNode = {
 	* (a group heading) is drawn from `text` across the whole row.
 	*/
 	cells?: Array<TableCell>;
+	/**
+	* The menu a right press on **this row** opens, as item labels in
+	* display order. Omit it and the press raises the plugin's `context`
+	* `widget_event`, exactly as a row without one always has.
+	*
+	* **The rest of what a row is for**, said on the row: `action` is
+	* the one thing a row can have a *button* for, and a changed file is
+	* usually for several — stage it, discard it, open its diff — so only
+	* one of them could be the button and the rest had nowhere to live.
+	*
+	* Native, and that is the point. The host opens the menu at the
+	* press's own cell, with the geometry, ↑/↓ navigation and
+	* outside-dismiss every other menu here has, and the plugin is asked
+	* nothing until an item is chosen. The choice comes back as
+	* `widget_event { event_type: "plugin_menu" }` on the *tree's* key,
+	* with `payload: { label, key }` — `key` being this row's
+	* `item_keys` entry, which is what tells one row's menu from
+	* another's. A tree's rows all share the tree's key, so without it
+	* the choice would name the tree and nothing else.
+	*/
+	contextMenu?: Array<string> | null;
 };
 type TextWindowAnchor = {
 	/**
@@ -6187,6 +6208,28 @@ interface HookEventMap {
 			line: number;
 			column: number;
 		}[];
+	};
+	/**
+	* An LSP navigation (go-to-definition, …) resolved to a non-`file://` URI
+	* whose scheme this plugin claimed via `registerLspUriScheme`. The handler
+	* is expected to fetch the synthetic document and open it itself.
+	*
+	* Fired only for registered schemes, so the core's "external location"
+	* fallback never runs for a URI a plugin is handling.
+	*/
+	lsp_open_external_uri: {
+		/** The full target URI (e.g. `jdt://contents/java.base/java.time/Instant.class`) */
+		uri: string;
+		/** The URI scheme, matched against the registry (e.g. `jdt`) */
+		scheme: string;
+		/** Target line, 0-indexed as it came from the server (LSP convention) */
+		line: number;
+		/** Target character, 0-indexed (LSP convention) */
+		character: number;
+		/** The language of the buffer the navigation started from */
+		language: string;
+		/** The server that produced the target (e.g. `jdtls`) */
+		server_name: string;
 	};
 	lsp_server_request: {
 		language: string;

@@ -114,6 +114,50 @@ impl WidgetImpl for List {
         super::KeyDisposition::Consumed
     }
 
+    /// **The wheel is the arrow keys, one notch further.**
+    ///
+    /// `box_meta` has always declared this kind `scrollable` and
+    /// `picker_scroll_target` — the latter's own doc promises the host
+    /// routes "the positionless wheel at the first widget declaring
+    /// this" — while the inherited `on_wheel` answered "not
+    /// scrollable" and let the notch chain out to the enclosing buffer
+    /// scroll. So every `List` in the app moved with ↑/↓ and ignored
+    /// the wheel, including the ones sitting in a pane that had turned
+    /// buffer scrolling *off* (Git Log's commit graph), where the notch
+    /// then went nowhere at all.
+    ///
+    /// Answering it with [`select_move`] — the function the arrows
+    /// already call — is what keeps one scrolling rule and one bound for
+    /// both, and what makes a notch at either end report itself
+    /// unconsumed so it still chains out. The `select` it queues goes
+    /// through `fx`, which is why the trait grew the parameter: a panel
+    /// beside the list has to learn of a wheel move exactly as it learns
+    /// of a key's, or scrolling the graph leaves the detail pane showing
+    /// the commit that was selected before the scroll.
+    ///
+    /// A notch is worth the delta the host already counted in items.
+    /// The host's `mouse_wheel_scroll_lines` is a *lines* setting and
+    /// this window is in items, so converting here would repeat the
+    /// division [`on_key`](Self::on_key)'s Page branch documents as
+    /// §6i's defect class. The delta arrives already in items — the
+    /// Page branch above is the one place a conversion happens, and it
+    /// happens against `viewport`, which the host shaped.
+    fn on_wheel(
+        &self,
+        spec: &WidgetSpec,
+        widget_key: &str,
+        panel: &mut crate::widgets::WidgetPanelState,
+        _viewport: super::Viewport,
+        delta: i32,
+        fx: &mut super::KeyFx,
+    ) -> bool {
+        let before = resolve_in(spec, widget_key, &panel.instance_states).selected;
+        select_move(spec, widget_key, panel, delta, fx);
+        // Moved, or parked against a bound it was already at. Saying
+        // "no" at the bound is what lets the notch keep chaining.
+        resolve_in(spec, widget_key, &panel.instance_states).selected != before
+    }
+
     /// **Type-ahead** (the listbox pattern), for a list that asks for it
     /// (`type_ahead`): characters typed in quick succession build a prefix,
     /// and the selection moves to the next item whose text starts with it —

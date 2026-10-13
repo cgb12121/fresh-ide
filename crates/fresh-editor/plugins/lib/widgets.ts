@@ -642,12 +642,13 @@ export function treeNode(
      * Chars, not display columns: a plugin has the string, not the
      * terminal's width table. Out-of-range values resolve to the end. */
     windowAnchor?: { pinned?: number; start: number; len: number };
-    /** A button drawn at the row's tail, `[ label ]`, held against the
-     * panel's right edge: what this row is *for*, said on the row rather
+    /** A button drawn at the row's tail, held against the panel's right
+     * edge: what this row is *for*, said on the row rather
      * than only in a footer. A click on it fires `widget_event`
      * `eventType: "action"` with `payload: { index, key }` and moves the
      * selection to that row; the keyboard reaches the same thing through
-     * `activate`. The body is fitted to the columns the button leaves, so
+     * `activate`. One-column glyphs render bare as icons; longer labels
+     * render as `[ label ]`. The body is fitted to the columns the button leaves, so
      * a row too wide for the panel slides under its button rather than
      * pushing it off. Ignored on a bordered card. */
     action?: string;
@@ -657,6 +658,25 @@ export function treeNode(
      * `text`. A node without cells in a table (a group heading) is drawn
      * from `text` across the whole row. */
     cells?: Array<string | { text: string; style?: Partial<OverlayOptions> }>;
+    /** The menu a right press on **this row** opens, as item labels in
+     * display order. Omit it and the press raises the plugin's `context`
+     * `widget_event` instead — which is what it has always done.
+     *
+     * The rest of what a row is for: `action` is the one thing a row can
+     * have a *button* for, and a changed file is usually for several
+     * things, so the rest need somewhere to live. Declaring them here is
+     * what makes the menu native — the host opens it at the press's own
+     * cell with the same geometry, ↑/↓ navigation and outside-dismiss the
+     * file explorer's menu has, and the plugin is not asked anything until
+     * an item is chosen.
+     *
+     * The choice comes back as `plugin_menu` **on the tree's key**, with
+     * `payload: { label, key }` where `key` is this row's `itemKeys`
+     * entry. A tree's rows all share the tree's key, so that field is what
+     * tells one row's menu from another's — a handler that reads only
+     * `label` will act on the wrong row the first time two rows offer the
+     * same item. */
+    contextMenu?: string[];
   },
 ): TreeNode {
   // `checked` is intentionally Optional<bool>, not a default-false
@@ -690,6 +710,9 @@ export function treeNode(
   }
   if (options?.action !== undefined) {
     node.action = options.action;
+  }
+  if (options?.contextMenu !== undefined) {
+    node.contextMenu = options.contextMenu;
   }
   if (options?.cells && options.cells.length > 0) {
     node.cells = options.cells.map((c) => (typeof c === "string" ? { text: c } : c));

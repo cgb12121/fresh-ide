@@ -414,6 +414,18 @@ pub trait WidgetImpl: Sync {
     /// enclosing buffer scroll. The default is "not scrollable".
     /// `viewport` is the window the notch moves — the bound is
     /// computed against it, never against the spec.
+    ///
+    /// **`fx`, as [`on_key`](Self::on_key) takes it, and for the same
+    /// reason.** A kind whose wheel moves a *selection* has to tell the
+    /// plugin, exactly as the key that moved it does — a `List` reached
+    /// by notch and by ↑/↓ must not differ in whether the panel beside
+    /// it learns of the move. It used to be absent, so a kind could only
+    /// mutate state and the caller could only repaint: the two were
+    /// quietly forced into "the wheel scrolls a viewport nobody is
+    /// watching". `flash_scrollbar` is honoured for the same reason the
+    /// key path honours it — a notch is pointer-driven and already
+    /// reveals the bar by hover, so in practice it stays false; it is
+    /// wired rather than left out so the two paths stay symmetric.
     fn on_wheel(
         &self,
         _spec: &WidgetSpec,
@@ -421,6 +433,7 @@ pub trait WidgetImpl: Sync {
         _panel: &mut crate::widgets::WidgetPanelState,
         _viewport: Viewport,
         _delta: i32,
+        _fx: &mut KeyFx,
     ) -> bool {
         false
     }

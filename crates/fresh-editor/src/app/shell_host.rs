@@ -2965,6 +2965,7 @@ impl Editor {
             UiFact::OpenPluginContextMenu {
                 slot,
                 widget_key,
+                item_key,
                 x,
                 y,
                 items,
@@ -2983,7 +2984,7 @@ impl Editor {
                 };
                 self.active_window_mut().plugin_context_menu =
                     Some(crate::app::types::PluginContextMenu::new(
-                        panel_key, widget_key, x, y, items,
+                        panel_key, widget_key, item_key, x, y, items,
                     ));
             }
             UiFact::ActivateContextMenuItem(idx) => {

@@ -1281,6 +1281,21 @@ fn tree_rows_plain(p: &TreeRows) -> Node<UiMsg> {
                     true,
                 );
                 select.1.drag_source = node.draggable;
+                // **A row that declared a menu gets it natively**, at the
+                // press's own cell: the same payload field a button's right
+                // press carries, read by the same arm of the pointer dispatch
+                // — which never asks which kind put it there, so a tree row
+                // reaches a mechanism a button has had all along with no new
+                // path through the shell. A row without one keeps the plain
+                // `context` event it has always raised.
+                if let Some(items) = node
+                    .context_menu
+                    .as_ref()
+                    .filter(|i| !i.is_empty())
+                    .cloned()
+                {
+                    select.1.payload["context_menu"] = serde_json::json!(items);
+                }
                 let row_event = select.1.clone();
                 hits.push(select);
                 let piece = match table {
@@ -1520,15 +1535,28 @@ fn tree_rows_cards(p: &CardTreeRows) -> Node<UiMsg> {
             // body (a press anywhere on the row is its) and the two glyphs
             // (a press inside their own bytes only). Where each one is is
             // the range beside it in `hits`, not anything this states.
-            let select = |row_target: bool| crate::widgets::WidgetEvent {
-                row_target,
-                context_click: row_target,
-                drag_source: row_target && n.draggable,
-                widget_key: tree_key.clone(),
-                widget_kind: "tree",
-                payload: serde_json::json!({ "index": abs, "key": item_key }),
-                event_type: "select",
-                owner_key: None,
+            let select = |row_target: bool| {
+                let mut payload = serde_json::json!({ "index": abs, "key": item_key });
+                // **A row that declared a menu gets it natively**, at the
+                // press's own cell — the same payload field the plain arm
+                // uses, read by the same arm of the pointer dispatch. Only a
+                // row target can raise a right press, so only one carries it;
+                // a glyph's hit stays what it was.
+                if row_target {
+                    if let Some(items) = n.context_menu.as_ref().filter(|i| !i.is_empty()) {
+                        payload["context_menu"] = serde_json::json!(items.clone());
+                    }
+                }
+                crate::widgets::WidgetEvent {
+                    row_target,
+                    context_click: row_target,
+                    drag_source: row_target && n.draggable,
+                    widget_key: tree_key.clone(),
+                    widget_kind: "tree",
+                    payload,
+                    event_type: "select",
+                    owner_key: None,
+                }
             };
             let mut rows: Vec<Node<UiMsg>> = Vec::new();
             let mut primary = r.entry.clone();
@@ -4483,9 +4511,23 @@ fn hit_node(
                             .collect::<Vec<_>>()
                     })
                 {
+                    // **Which row, when the menu belongs to a row.** A tree's
+                    // rows all carry the *tree's* key, so the choice would
+                    // name the tree and nothing else; the row's own
+                    // `item_key` rides in the same payload and is carried
+                    // through to the `plugin_menu` event. A button's payload
+                    // has no such field — its `widget_key` already names it —
+                    // so this is empty there and its event is unchanged.
+                    let item_key = hit
+                        .payload
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     return Some(UiMsg::Ui(super::msg::UiFact::OpenPluginContextMenu {
                         slot,
                         widget_key: hit.owner().to_string(),
+                        item_key,
                         x: e.pos.x.max(0) as u16,
                         y: e.pos.y.max(0) as u16,
                         items,
@@ -6071,6 +6113,75 @@ pub(crate) mod tests {
         assert_eq!((x, y), (8, 2), "the screen cell, not the widget's own");
     }
 
+    /// **A row that declared a menu gets it natively, and the choice can name
+    /// the row.** A tree's rows all carry the *tree's* key, so the menu that
+    /// opens is not enough to say which row was pressed: the row's own
+    /// `item_keys` entry has to ride along, or a handler reading only `label`
+    /// acts on the wrong row the first time two rows offer the same item.
+    ///
+    /// The companion to the test above, which is the guard for the other
+    /// half: a row that declared nothing still raises the plain `context`
+    /// event rather than an empty native menu.
+    #[test]
+    fn a_right_press_on_a_tree_row_that_declared_a_menu_opens_it_with_the_rows_key() {
+        let node_with_menu = |text: &str| {
+            let mut n = tree_node(text, 0, false);
+            n.context_menu = Some(vec![format!("Open {text}"), "Discard".into()]);
+            n
+        };
+        let spec = WidgetSpec::Tree {
+            nodes: vec![node_with_menu("alpha"), node_with_menu("beta")].into(),
+            item_keys: vec!["file:alpha".into(), "file:beta".into()].into(),
+            selected_index: -1,
+            visible_rows: Some(4),
+            key: Some("changes".into()),
+            expanded_keys: Vec::new(),
+            checkable: false,
+            item_height: 1,
+            card_borders: false,
+            toggle_on_click: false,
+            columns: Vec::new(),
+            indent_cols: 2,
+        };
+        let mut ui: Ui<UiMsg> = Ui::new();
+        ui.frame(node(&spec, WIDTH, &cx()), Size::new(WIDTH, 24));
+        // **Pressed by the row's own rect**, so the assertion does not depend
+        // on where the tree happens to start drawing.
+        let second = ui
+            .find_by_key(&fresh_ui::Key::Str("file:beta".into()))
+            .expect("the second row is laid out");
+        let at = ui.rect_of(second);
+        let fact = ui
+            .dispatch(fresh_ui::Input::press(
+                fresh_ui::Point::new(8, at.y),
+                fresh_ui::MouseButton::Right,
+                fresh_ui::Mods::NONE,
+            ))
+            .msgs
+            .into_iter()
+            .find_map(|m| match m {
+                UiMsg::Ui(UiFact::OpenPluginContextMenu { .. }) => Some(m),
+                _ => None,
+            })
+            .expect("a native menu, not the plain `context` event");
+        let UiMsg::Ui(UiFact::OpenPluginContextMenu {
+            widget_key,
+            item_key,
+            items,
+            ..
+        }) = fact
+        else {
+            unreachable!("matched above")
+        };
+        assert_eq!(widget_key, "changes", "the tree's key, as it always was");
+        assert_eq!(item_key, "file:beta", "and the row's, which is what is new");
+        assert_eq!(
+            items,
+            vec!["Open beta".to_string(), "Discard".to_string()],
+            "the labels the row declared, in order"
+        );
+    }
+
     /// And a button that declared no menu claims nothing, so the press
     /// reaches the surface behind — which is where a right press with no menu
     /// under it has always gone. A button is an affordance, not a menu host,
@@ -6200,6 +6311,7 @@ pub(crate) mod tests {
             window_anchor: None,
             cells: Vec::new(),
             action: None,
+            context_menu: None,
         }
     }
 
@@ -6223,6 +6335,61 @@ pub(crate) mod tests {
             columns: Vec::new(),
             indent_cols: 2,
         }
+    }
+
+    /// **A tree is laid at the height it is given, not at its own content.**
+    ///
+    /// This is the whole question for a panel that stacks a tree under fixed
+    /// rows — Source Control's staged / changes / graph lists. As a panel's
+    /// *root* a tree gets the pane's height and windows itself, which is why
+    /// `markdown_toc.ts` scrolls. One step down a `Col` it is not the root,
+    /// and whether it still takes the leftover is what decides whether its
+    /// rows below the cut can be scrolled to or are merely clipped away —
+    /// which, clipped and unreachable, is the bug this names.
+    #[test]
+    fn a_tree_under_fixed_rows_takes_the_leftover_just_as_one_at_the_root_does() {
+        fn flat(n: usize) -> WidgetSpec {
+            WidgetSpec::Tree {
+                nodes: (0..n)
+                    .map(|i| tree_node(&format!("file{i}"), 0, false))
+                    .collect::<Vec<_>>()
+                    .into(),
+                item_keys: (0..n).map(|i| format!("f{i}")).collect::<Vec<_>>().into(),
+                selected_index: -1,
+                visible_rows: None,
+                key: Some("tr".into()),
+                expanded_keys: Vec::new(),
+                checkable: false,
+                item_height: 1,
+                card_borders: false,
+                toggle_on_click: false,
+                columns: Vec::new(),
+                indent_cols: 2,
+            }
+        }
+        let height_of = |spec: &WidgetSpec| {
+            let mut ui: Ui<UiMsg> = Ui::new();
+            ui.frame(node(spec, WIDTH, &cx()), Size::new(WIDTH, 12));
+            let id = ui
+                .find_by_key(&fresh_ui::Key::Str("tr".into()))
+                .expect("the tree is laid out");
+            ui.size_of(id).height
+        };
+
+        let at_root = height_of(&flat(40));
+        let under_a_row = height_of(&col_of(vec![
+            WidgetSpec::Raw {
+                entries: vec![raw("STAGED CHANGES (40)")],
+                key: None,
+            },
+            flat(40),
+        ]));
+        assert_eq!(
+            under_a_row, at_root,
+            "a tree takes the leftover under fixed rows exactly as it does at the root; \
+             laid at its own content instead, every row past the cut is clipped with \
+             nothing left to scroll them into view"
+        );
     }
 
     /// **The seed is drawn until the host has a set of its own.** A collapsed
@@ -7413,6 +7580,7 @@ pub(crate) mod tests {
                     window_anchor: None,
                     cells: Vec::new(),
                     action: None,
+                    context_menu: None,
                 })
                 .collect::<Vec<_>>()
                 .into(),

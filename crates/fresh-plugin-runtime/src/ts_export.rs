@@ -870,6 +870,28 @@ interface HookEventMap {
     symbol: string;
     locations: { file: string; line: number; column: number }[];
   };
+  /**
+   * An LSP navigation (go-to-definition, …) resolved to a non-`file://` URI
+   * whose scheme this plugin claimed via `registerLspUriScheme`. The handler
+   * is expected to fetch the synthetic document and open it itself.
+   *
+   * Fired only for registered schemes, so the core's "external location"
+   * fallback never runs for a URI a plugin is handling.
+   */
+  lsp_open_external_uri: {
+    /** The full target URI (e.g. `jdt://contents/java.base/java.time/Instant.class`) */
+    uri: string;
+    /** The URI scheme, matched against the registry (e.g. `jdt`) */
+    scheme: string;
+    /** Target line, 0-indexed as it came from the server (LSP convention) */
+    line: number;
+    /** Target character, 0-indexed (LSP convention) */
+    character: number;
+    /** The language of the buffer the navigation started from */
+    language: string;
+    /** The server that produced the target (e.g. `jdtls`) */
+    server_name: string;
+  };
   lsp_server_request: {
     language: string;
     method: string;

@@ -78,17 +78,22 @@ impl Editor {
                     (
                         m.panel_key.clone(),
                         m.widget_key.clone(),
+                        m.item_key.clone(),
                         m.highlighted_item(),
                     )
                 });
                 self.active_window_mut().close_context_menus();
-                if let Some((panel_key, widget_key, label)) = chosen {
-                    self.fire_widget_event(
-                        &panel_key,
-                        widget_key,
-                        "plugin_menu".to_string(),
-                        serde_json::json!({ "label": label }),
-                    );
+                if let Some((panel_key, widget_key, item_key, label)) = chosen {
+                    // `key` rides only when the menu belonged to a row: a
+                    // tree's rows share the tree's key, so without it the
+                    // choice would name the tree and leave the plugin to
+                    // guess which of its rows was asked about. A button's
+                    // menu has no row, and its payload stays as it was.
+                    let mut payload = serde_json::json!({ "label": label });
+                    if !item_key.is_empty() {
+                        payload["key"] = serde_json::json!(item_key);
+                    }
+                    self.fire_widget_event(&panel_key, widget_key, "plugin_menu".to_string(), payload);
                 }
                 return Ok(());
             }

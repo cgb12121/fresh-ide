@@ -93,23 +93,27 @@ impl Editor {
     ///
     /// `None` when the press carries no byte at all — the web's by-index
     /// route, and a keyboard activation.
-    /// **A double-click on a list row activates it**, the way Enter does:
-    /// the first press selected the row (its `select`), the second fires the
-    /// list's `activate` for the selection — opening a folder in a file
-    /// browser, choosing an entry in a picker. Other widgets take a second
+    /// **A double-click on a list or tree row activates it**, the way Enter
+    /// does: the first press selects the row (its `select`), the second fires
+    /// the widget's `activate` for the selection. This opens folders, chooses
+    /// picker entries, and previews Git changes. Other widgets take a second
     /// press as another single one.
     pub(crate) fn activate_on_double_click(
         &mut self,
         panel_key: &crate::widgets::PanelKey,
         hit: &crate::widgets::WidgetEvent,
     ) {
-        if hit.widget_kind != "list" || hit.event_type != "select" {
+        if !matches!(hit.widget_kind, "list" | "tree") || hit.event_type != "select" {
             return;
         }
         let owner = hit.owner().to_string();
         let ev = self.widget_registry.get(panel_key).and_then(|p| {
             let spec = crate::widgets::find_widget_by_key(&p.spec, &owner)?;
-            crate::widgets::kinds::list::activate_event(spec, &owner, p)
+            match hit.widget_kind {
+                "list" => crate::widgets::kinds::list::activate_event(spec, &owner, p),
+                "tree" => crate::widgets::kinds::tree::activate_event(spec, &owner, p),
+                _ => None,
+            }
         });
         if let Some((event_type, payload)) = ev {
             self.fire_widget_event(panel_key, owner, event_type, payload);
@@ -2173,11 +2177,11 @@ impl Editor {
     /// decides what a notch means and whether it took it, and a widget that
     /// moved gets the panel re-rendered.
     ///
-    /// Returns `true` when the widget consumed the notch. Today the only
-    /// caller is a `Text`'s open completion list — see
+    /// Returns `true` when the widget consumed the notch. Two kinds
+    /// answer it today: a `Text`'s open completion list — see
     /// [`UiFact::WidgetWheel`](crate::view::shell::msg::UiFact::WidgetWheel)
-    /// for why that is the one window in a described panel the tree cannot
-    /// own.
+    /// for why that is a window in a described panel the tree cannot
+    /// own — and a `List`, whose wheel moves its selection.
     pub(crate) fn wheel_widget_by_key(
         &mut self,
         panel_key: &crate::widgets::PanelKey,
@@ -2197,12 +2201,23 @@ impl Editor {
         let Some(panel) = self.widget_registry.get_mut(panel_key) else {
             return false;
         };
+        let mut fx = crate::widgets::kinds::KeyFx::default();
         if !crate::widgets::kinds::behavior(widget)
-            .on_wheel(widget, widget_key, panel, viewport, delta)
+            .on_wheel(widget, widget_key, panel, viewport, delta, &mut fx)
         {
             return false;
         }
         self.rerender_widget_panel(panel_key);
+        // **The same channel the key path uses, and for the same reason.**
+        // A `List` whose selection a notch moved tells the plugin exactly
+        // as one whose selection an arrow moved does; without this the
+        // two ways of scrolling the same list disagree about whether the
+        // panel beside it learns of the move. `fx.flash_scrollbar` is
+        // deliberately not honoured here — a notch is pointer-driven, so
+        // the hover that delivered it has already revealed the bar.
+        for (event_type, payload) in fx.events {
+            self.fire_widget_event(panel_key, widget_key.to_string(), event_type, payload);
+        }
         true
     }
 
@@ -4909,6 +4924,7 @@ mod tests {
             window_anchor: None,
             cells: Vec::new(),
             action: None,
+            context_menu: None,
         };
         let mut nodes = Vec::new();
         let mut keys = Vec::new();

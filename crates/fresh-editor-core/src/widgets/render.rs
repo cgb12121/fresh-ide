@@ -4716,6 +4716,7 @@ pub mod tests {
             window_anchor: None,
             cells: Vec::new(),
             action: None,
+            context_menu: None,
         }
     }
 

@@ -402,6 +402,11 @@ pub struct PluginContextMenu {
     /// The button the menu was opened from, carried through so the plugin can
     /// tell which row it was asked about when an item is chosen.
     pub widget_key: String,
+    /// **The row, when the menu belongs to one.** A `Tree`'s rows all carry
+    /// the tree's key, so `widget_key` alone names the tree and nothing
+    /// else — this is the row's own `item_keys` entry. Empty for a menu a
+    /// button opened, whose `widget_key` already names it.
+    pub item_key: String,
     /// Item labels in display order, as the plugin declared them.
     pub items: Vec<String>,
     /// Shared geometry + navigation core (position, highlight, width, items).
@@ -413,6 +418,7 @@ impl PluginContextMenu {
     pub fn new(
         panel_key: crate::widgets::PanelKey,
         widget_key: String,
+        item_key: String,
         x: u16,
         y: u16,
         items: Vec<String>,
@@ -420,6 +426,7 @@ impl PluginContextMenu {
         Self {
             panel_key,
             widget_key,
+            item_key,
             menu: ContextMenu::new(x, y, PLUGIN_CONTEXT_MENU_WIDTH, items.len()),
             items,
         }

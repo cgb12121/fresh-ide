@@ -2233,7 +2233,9 @@ pub struct TreeNode {
     /// to. `Some(label)` renders `[ label ]` against the panel's right
     /// edge and emits a hit area over it that fires the `action` event
     /// with the row's `index` and `key`; the keyboard reaches the same
-    /// thing through the tree's `activate`.
+    /// thing through the tree's `activate`. A one-column glyph (such as
+    /// `+`, `-` or `↺`) is drawn bare as an icon; longer labels keep the
+    /// `[ label ]` frame.
     ///
     /// The button is pinned like the indent is pinned: it sits outside the
     /// window the body is fitted into, so a row too wide for the panel
@@ -2249,6 +2251,28 @@ pub struct TreeNode {
     /// (a group heading) is drawn from `text` across the whole row.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<TableCell>,
+    /// The menu a right press on **this row** opens, as item labels in
+    /// display order. Omit it and the press raises the plugin's `context`
+    /// `widget_event`, exactly as a row without one always has.
+    ///
+    /// **The rest of what a row is for**, said on the row: [`action`] is
+    /// the one thing a row can have a *button* for, and a changed file is
+    /// usually for several — stage it, discard it, open its diff — so only
+    /// one of them could be the button and the rest had nowhere to live.
+    ///
+    /// Native, and that is the point. The host opens the menu at the
+    /// press's own cell, with the geometry, ↑/↓ navigation and
+    /// outside-dismiss every other menu here has, and the plugin is asked
+    /// nothing until an item is chosen. The choice comes back as
+    /// `widget_event { event_type: "plugin_menu" }` on the *tree's* key,
+    /// with `payload: { label, key }` — `key` being this row's
+    /// `WidgetSpec::Tree::item_keys` entry, which is what tells one row's
+    /// menu from another's. A tree's rows all share the tree's key, so
+    /// without it the choice would name the tree and nothing else.
+    ///
+    /// [`action`]: TreeNode::action
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_menu: Option<Vec<String>>,
 }
 
 /// One cell of a table row (`TreeNode::cells`).
