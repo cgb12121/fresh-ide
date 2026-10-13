@@ -174,7 +174,7 @@ async function refreshGitExplorerDecorations() {
     const addRepoGroup = async (repoRoot: string): Promise<void> => {
       if (!repoRoot || seenRoots.has(repoRoot)) return;
       seenRoots.add(repoRoot);
-      const statusResult = await editor.spawnProcess("git", ["status", "--porcelain", "-z"], repoRoot);
+      const statusResult = await editor.spawnProcess("git", ["status", "--porcelain", "-z", "-u"], repoRoot);
       if (statusResult.exit_code === 0) {
         repoGroups.push({ root: repoRoot, decorations: parseStatusOutput(statusResult.stdout, repoRoot) });
       }

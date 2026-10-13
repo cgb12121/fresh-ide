@@ -1694,7 +1694,7 @@
           "default": null
         },
         "file_status_untracked_fg": {
-          "description": "File status: untracked file color in file explorer (falls back to diagnostic.hint_fg)",
+          "description": "File status: untracked file color in file explorer (falls back to ui.file_status_added_fg)",
           "anyOf": [
             {
               "$ref": "#/$defs/StyledColorDef"

@@ -935,7 +935,7 @@ pub struct UiColors {
     /// File status: renamed file color in file explorer (falls back to diagnostic.info_fg)
     #[serde(default)]
     pub file_status_renamed_fg: Option<StyledColorDef>,
-    /// File status: untracked file color in file explorer (falls back to diagnostic.hint_fg)
+    /// File status: untracked file color in file explorer (falls back to ui.file_status_added_fg)
     #[serde(default)]
     pub file_status_untracked_fg: Option<StyledColorDef>,
     /// File status: conflicted file color in file explorer (falls back to diagnostic.error_fg)
@@ -2339,7 +2339,7 @@ theme_color_keys! {
         "file_status_deleted_fg" => color file_status_deleted_fg fallback "diagnostic.error_fg",
         "file_status_modified_fg" => color file_status_modified_fg fallback "diagnostic.warning_fg",
         "file_status_renamed_fg" => color file_status_renamed_fg fallback "diagnostic.info_fg",
-        "file_status_untracked_fg" => color file_status_untracked_fg fallback "diagnostic.hint_fg",
+        "file_status_untracked_fg" => color file_status_untracked_fg fallback "ui.file_status_added_fg",
         "folder_fg" => color folder_fg fallback "editor.fg",
         "help_bg" => color help_bg,
         "help_fg" => color help_fg,
@@ -3235,8 +3235,8 @@ mod tests {
         // deleted/conflicted -> error_fg
         assert_eq!(theme.file_status_deleted_fg, Color::Rgb(220, 50, 47));
         assert_eq!(theme.file_status_conflicted_fg, Color::Rgb(220, 50, 47));
-        // untracked -> hint_fg
-        assert_eq!(theme.file_status_untracked_fg, Color::Rgb(101, 123, 131));
+        // untracked -> ui.file_status_added_fg (which falls back to info_fg when added_fg is unset)
+        assert_eq!(theme.file_status_untracked_fg, Color::Rgb(38, 139, 210));
     }
 
     #[test]

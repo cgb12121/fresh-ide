@@ -122,6 +122,8 @@ export function statusToDecoration(status: string, staged: boolean): Decoration 
   switch (status) {
     case "A":
       return { symbol: "A", color: COLORS.added, priority: PRIORITY.added };
+    case "?":
+      return { symbol: "U", color: COLORS.untracked, priority: PRIORITY.untracked };
     case "M":
       return {
         symbol: "M",

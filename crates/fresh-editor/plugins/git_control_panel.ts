@@ -699,7 +699,7 @@ export function buildGitPanelSpec(): WidgetSpec {
         button(" 🗑 ", {
           key: "git_branch_del",
           bare: true,
-          style: { fg: "syntax.error" },
+          style: { fg: "diagnostic.error_fg" },
           hoverStyle: { fg: "syntax.keyword", bold: true },
         })
       )
@@ -781,7 +781,7 @@ export function buildGitPanelSpec(): WidgetSpec {
                   button(deleteBranchForce ? "[v] Force delete (-D)" : "[ ] Force delete (-D)", {
                     key: "dialog_del_toggle_force",
                     bare: true,
-                    style: { fg: deleteBranchForce ? "syntax.error" : "editor.fg" },
+                    style: { fg: deleteBranchForce ? "diagnostic.error_fg" : "editor.fg" },
                   })
                 )
               )
@@ -991,6 +991,11 @@ editor.on("widget_event", async (event: WidgetEvt) => {
     const itemKey = String((event.payload as { key?: unknown } | undefined)?.key ?? "");
     if (itemKey.startsWith("git_commit:")) {
       await showCommitPreview(itemKey.slice("git_commit:".length));
+    } else if (itemKey.startsWith("git_preview_file:")) {
+      const selection = itemKey.slice("git_preview_file:".length);
+      const pathSeparator = selection.indexOf(":");
+      const path = pathSeparator >= 0 ? selection.slice(pathSeparator + 1) : selection;
+      await previewChangedFile(path, selection.startsWith("staged:"));
     }
     return;
   }

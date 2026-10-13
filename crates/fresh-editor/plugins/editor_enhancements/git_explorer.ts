@@ -111,7 +111,7 @@ export async function refreshCustomGitExplorer() {
     // repo, 78ms vs 632ms (git 2.45).
     const statusRes = await editor.spawnProcess(
       "git",
-      ["status", "--porcelain=v1", "-z", "--ignored=matching"],
+      ["status", "--porcelain=v1", "-z", "--ignored=matching", "-u"],
       repoRoot
     );
     if (statusRes.exit_code !== 0) {

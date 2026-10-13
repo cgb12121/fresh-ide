@@ -118,7 +118,7 @@
     "file_status_modified_fg": [250, 189, 47],
     "file_status_deleted_fg": [251, 73, 52],
     "file_status_renamed_fg": [142, 192, 124],
-    "file_status_untracked_fg": [146, 131, 116],
+    "file_status_untracked_fg": [184, 187, 38],
     "file_status_conflicted_fg": [211, 134, 155]
   },
   "search": {
